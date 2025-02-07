@@ -1,0 +1,10 @@
+/.next
+/.env.local
+/node_modules
+/public
+/build
+/dist
+/coverage
+/logs
+/temp
+/cache

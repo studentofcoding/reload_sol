@@ -1,8 +1,9 @@
-import React from 'react';
+import * as React from 'react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { TOKEN_PROGRAM_ID, AccountLayout } from '@solana/spl-token';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import Image from 'next/image';
+import { Connection } from '@solana/web3.js';
 
 interface TokenInfo {
   mint: string;
@@ -86,6 +87,22 @@ class RateLimiter {
     }
 
     await this.processQueue();
+  }
+}
+
+// Add TradeabilityRateLimiter class after the existing RateLimiter class
+class TradeabilityRateLimiter extends RateLimiter {
+  private static instance: TradeabilityRateLimiter;
+  
+  private constructor() {
+    super(2); // 2 requests per second
+  }
+
+  static getInstance(): TradeabilityRateLimiter {
+    if (!TradeabilityRateLimiter.instance) {
+      TradeabilityRateLimiter.instance = new TradeabilityRateLimiter();
+    }
+    return TradeabilityRateLimiter.instance;
   }
 }
 
@@ -355,6 +372,261 @@ const calculateTotalValue = (tokens: TokenInfo[]): number => {
 const RATE_LIMIT_ERROR = 429;
 const RETRY_DELAY = 5000; // 5 seconds
 
+// Add clipboard function
+const copyToClipboard = async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (err) {
+    console.error('Failed to copy:', err);
+    return false;
+  }
+};
+
+// Add interface for Jupiter window type
+declare global {
+  interface Window {
+    Jupiter: {
+      init: (config: any) => void;
+      syncProps: (props: any) => void;
+    };
+  }
+}
+
+// Add interface for Jupiter quote response
+interface JupiterQuoteResponse {
+  error?: string;
+  data?: {
+    inputMint: string;
+    outputMint: string;
+    inAmount: string;
+    outAmount: string;
+    otherAmountThreshold: string;
+    swapMode: string;
+    slippageBps: number;
+    priceImpactPct: number;
+    routePlan: any[];
+    contextSlot: number;
+  };
+}
+
+// Update the checkTokenTradeability function to use Jupiter quote
+const checkTokenTradeability = async (mintAddress: string): Promise<{ tradeable: boolean; error?: string }> => {
+  try {
+    const response = await fetch(
+      `https://quote-api.jup.ag/v6/quote?` +
+      `inputMint=${mintAddress}` +
+      `&outputMint=So11111111111111111111111111111111111111112` +
+      `&amount=1`
+    );
+
+    const result: JupiterQuoteResponse = await response.json();
+
+    if (result.error) {
+      return { tradeable: false, error: result.error };
+    }
+
+    if (result.data?.routePlan && result.data.routePlan.length > 0) {
+      return { tradeable: true };
+    }
+
+    return { tradeable: false, error: 'No route available' };
+  } catch (error) {
+    return { 
+      tradeable: false, 
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
+};
+
+// Add interface for tradeability status
+interface TradeabilityStatus {
+  tradeable: boolean;
+  error?: string;
+}
+
+// Update Tooltip component with persistent chart toggle
+const Tooltip = ({ content, children }: { content: React.ReactNode; children: React.ReactNode }) => {
+  const [show, setShow] = React.useState(false);
+
+  return (
+    <div className="relative inline-block">
+      <div
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+      >
+        {children}
+      </div>
+      {show && (
+        <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 z-50">
+          <div className="bg-gray-900 text-white rounded-lg shadow-lg p-2 text-sm">
+            {content}
+            <div className="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1">
+              <div className="border-8 border-transparent border-t-gray-900" />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Add new interface for Jupiter popup state
+interface JupiterPopupState {
+  isOpen: boolean;
+  mintAddress: string | null;
+}
+
+// Add new component for Jupiter popup
+const JupiterPopup = ({ mintAddress, onClose }: { mintAddress: string; onClose: () => void }) => {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!window.Jupiter) return;
+
+    window.Jupiter.init({
+      displayMode: "integrated",
+      integratedTargetId: `jupiter-terminal-${mintAddress}`,
+      endpoint: "https://api.mainnet-beta.solana.com",
+      enableWalletPassthrough: true,
+      defaultExplorer: "Solscan",
+      defaultInputMint: mintAddress,
+      defaultOutputMint: "So11111111111111111111111111111111111111112", // SOL
+    });
+  }, [mintAddress]);
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+      <div 
+        ref={containerRef}
+        className="bg-white rounded-lg p-4 w-[480px] max-w-[90vw] max-h-[90vh] relative"
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-2 right-2 p-2 hover:bg-gray-100 rounded-full"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+        <div id={`jupiter-terminal-${mintAddress}`} className="mt-8" />
+      </div>
+    </div>
+  );
+};
+
+// Add new interface for token details modal
+interface TokenDetailsModalProps {
+  token: TokenInfo;
+  onClose: () => void;
+  formatBalance: (balance: bigint, decimals?: number) => string;
+  formatUSD: (value: number) => string;
+}
+
+// Add helper functions at the top level
+const formatBalance = (balance: bigint, decimals: number = 9): string => {
+  const balanceStr = balance.toString().padStart(decimals + 1, '0');
+  const decimalIndex = balanceStr.length - decimals;
+  const wholeNumber = balanceStr.slice(0, decimalIndex) || '0';
+  const decimal = balanceStr.slice(decimalIndex, decimalIndex + 4);
+  return `${wholeNumber}.${decimal}`;
+};
+
+const formatUSD = (value: number): string => {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6
+  }).format(value);
+};
+
+// Update TokenDetailsModal to use the formatting functions
+const TokenDetailsModal = ({ token, onClose, formatBalance, formatUSD }: TokenDetailsModalProps) => {
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center overflow-y-auto">
+      <div className="bg-white rounded-lg p-6 w-[800px] max-w-[90vw] max-h-[90vh] relative overflow-y-auto">
+        {/* Close button */}
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 p-2 hover:bg-gray-100 rounded-full transition-colors"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+
+        {/* Token header */}
+        <div className="flex items-center space-x-4 mb-6">
+          {token.logoURI ? (
+            <Image
+              src={token.logoURI}
+              alt={token.symbol || 'token'}
+              width={64}
+              height={64}
+              className="rounded-full"
+            />
+          ) : (
+            <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center">
+              <span className="text-2xl text-gray-500">
+                {(token.symbol || '??').slice(0, 2)}
+              </span>
+            </div>
+          )}
+          <div>
+            <h2 className="text-2xl font-bold">
+              {token.symbol || token.mint.slice(0, 8)}
+            </h2>
+            <p className="text-gray-600">{token.name || 'Unknown Token'}</p>
+          </div>
+        </div>
+
+        {/* Token details */}
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="bg-gray-50 p-4 rounded-lg">
+            <h3 className="text-sm text-gray-500 mb-1">Balance</h3>
+            <p className="text-lg font-medium">
+              {formatBalance(token.balance, token.decimals)}
+            </p>
+          </div>
+          <div className="bg-gray-50 p-4 rounded-lg">
+            <h3 className="text-sm text-gray-500 mb-1">Value</h3>
+            <p className="text-lg font-medium text-green-600">
+              {formatUSD(token.price ? Number(token.balance) * token.price / Math.pow(10, token.decimals || 9) : 0)}
+            </p>
+          </div>
+        </div>
+
+        {/* Additional info */}
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-sm text-gray-500 mb-1">Token Address</h3>
+            <div className="flex items-center space-x-2">
+              <code className="bg-gray-100 p-2 rounded text-sm flex-1 overflow-x-auto">
+                {token.mint}
+              </code>
+              <button
+                onClick={async () => {
+                  await copyToClipboard(token.mint);
+                  setStatus('Address copied!');
+                  setTimeout(() => setStatus(''), 2000);
+                }}
+                className="p-2 hover:bg-gray-100 rounded-full"
+                title="Copy address"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                  <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export function SwapWidget() {
   const { connection } = useConnection();
   const { publicKey, signTransaction, sendTransaction } = useWallet();
@@ -371,6 +643,88 @@ export function SwapWidget() {
   const [isMounted, setIsMounted] = React.useState(false);
   const [tokenCounter, setTokenCounter] = React.useState(0);
   const [showValue, setShowValue] = React.useState(true);
+  const passthroughWalletContextState = useWallet();
+  const [tradeableTokens, setTradeableTokens] = React.useState<Set<string>>(new Set());
+
+  // Add Jupiter popup state
+  const [jupiterPopup, setJupiterPopup] = React.useState<JupiterPopupState>({
+    isOpen: false,
+    mintAddress: null
+  });
+
+  // Add state for token details modal in SwapWidget
+  const [selectedTokenDetails, setSelectedTokenDetails] = React.useState<TokenInfo | null>(null);
+
+  // Add state for chart modal
+  const [chartModalMint, setChartModalMint] = React.useState<string | null>(null);
+
+  const tradeabilityLimiter = React.useMemo(() => TradeabilityRateLimiter.getInstance(), []);
+
+  // Add ref to track previous wallet address
+  const previousWalletRef = React.useRef<string | null>(null);
+
+  // Update tradeability state to include error messages
+  const [tradeabilityStatus, setTradeabilityStatus] = React.useState<Record<string, TradeabilityStatus>>({});
+  
+  // Update effect to check token tradeability
+  React.useEffect(() => {
+    const checkTokens = async () => {
+      for (const token of tokens) {
+        try {
+          // Use rate limiter to prevent too many requests
+          const status = await tradeabilityLimiter.add(async () => {
+            return await checkTokenTradeability(token.mint);
+          });
+          
+          // Update tradeability status immediately for each token
+          setTradeabilityStatus(current => ({
+            ...current,
+            [token.mint]: status
+          }));
+
+        } catch (error) {
+          console.error(`Failed to check tradeability for ${token.mint}:`, error);
+          setTradeabilityStatus(current => ({
+            ...current,
+            [token.mint]: {
+              tradeable: false,
+              error: 'Failed to check route'
+            }
+          }));
+        }
+      }
+    };
+    
+    if (tokens.length > 0) {
+      checkTokens();
+    }
+  }, [tokens]);
+
+  // Add effect to detect wallet changes and re-fetch
+  React.useEffect(() => {
+    const currentWallet = publicKey?.toBase58() || null;
+    
+    // Check if wallet has changed
+    if (currentWallet !== previousWalletRef.current) {
+      console.log('Wallet changed:', {
+        previous: previousWalletRef.current,
+        current: currentWallet
+      });
+
+      // Reset states for new wallet
+      setTokens([]);
+      setTradeableTokens(new Set());
+      setStatus('');
+      
+      // Fetch tokens for new wallet
+      if (currentWallet) {
+        fetchTokenAccounts();
+      }
+      
+      // Update previous wallet ref
+      previousWalletRef.current = currentWallet;
+    }
+  }, [publicKey]); // Only depend on publicKey changes
 
   // Load cache on mount
   React.useEffect(() => {
@@ -455,6 +809,24 @@ export function SwapWidget() {
     }
   }, []);
 
+  // Add Jupiter initialization
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || !window.Jupiter) return;
+
+    window.Jupiter.init({
+      displayMode: "integrated",
+      integratedTargetId: "integrated-terminal",
+      endpoint: "https://api.mainnet-beta.solana.com",
+      enableWalletPassthrough: true,
+    });
+  }, []);
+
+  // Add wallet sync effect
+  React.useEffect(() => {
+    if (!window.Jupiter?.syncProps) return;
+    window.Jupiter.syncProps({ passthroughWalletContextState });
+  }, [passthroughWalletContextState.connected]);
+
   const fetchTokenMetadata = async (mintAddress: string) => {
     try {
       const now = Date.now();
@@ -504,30 +876,17 @@ export function SwapWidget() {
     }
   };
 
-  const formatUSD = (value: number): string => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 6
-    }).format(value);
-  };
-
-  const formatBalance = (balance: bigint, decimals: number = 9): string => {
-    const balanceStr = balance.toString().padStart(decimals + 1, '0');
-    const decimalIndex = balanceStr.length - decimals;
-    const wholeNumber = balanceStr.slice(0, decimalIndex) || '0';
-    const decimal = balanceStr.slice(decimalIndex, decimalIndex + 4);
-    return `${wholeNumber}.${decimal}`;
-  };
-
   const calculateValue = (balance: bigint, decimals: number, price: number): number => {
     const balanceNum = Number(balance) / Math.pow(10, decimals);
     return balanceNum * price;
   };
 
   const fetchTokenAccounts = async () => {
-    if (!publicKey) return;
+    if (!publicKey) {
+      setTokens([]);
+      setStatus('');
+      return;
+    }
     
     try {
       setStatus('Fetching token accounts...');
@@ -668,13 +1027,6 @@ export function SwapWidget() {
     }
   };
 
-  // Update useEffect to only fetch on publicKey change
-  React.useEffect(() => {
-    if (publicKey) {
-      fetchTokenAccounts();
-    }
-  }, [publicKey]);
-
   // Update toggleToken to save selection
   const toggleToken = (mint: string | PublicKey) => {
     const mintAddress = getMintAddress(typeof mint === 'string' ? mint : mint.toBase58());
@@ -765,6 +1117,31 @@ export function SwapWidget() {
     return valueStr.replace(/\d/g, '*'); // Replace all digits with asterisks while keeping formatting
   };
 
+  // Define ChartModal component inside SwapWidget
+  const ChartModal = ({ mintAddress, onClose }: { mintAddress: string; onClose: () => void }) => {
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+        <div className="bg-white rounded-lg p-6 w-[900px] max-w-[95vw] h-[80vh] relative">
+          <button
+            onClick={onClose}
+            className="absolute top-4 right-4 p-2 hover:bg-gray-100 rounded-full transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          <div className="h-full">
+            <iframe 
+              src={`https://www.solanatracker.io/chart/embed/${mintAddress}`}
+              className="w-full h-full border-0"
+              title="Token price chart"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="swap-container p-4">
       {!isOnline && (
@@ -829,9 +1206,11 @@ export function SwapWidget() {
                 : 0;
               
               return (
-                <div key={tokenKey} 
-                  className={`token-card bg-white rounded-lg shadow-md p-4 hover:shadow-lg transition-shadow
+                <div 
+                  key={tokenKey} 
+                  className={`token-card bg-white rounded-lg shadow-md p-4 hover:shadow-lg transition-shadow cursor-pointer
                     ${token.error ? 'border-red-300 bg-red-50' : ''}`}
+                  onClick={() => setSelectedTokenDetails(token)}
                 >
                   {/* Card Header with Checkbox and Icon */}
                   <div className="flex items-start justify-between mb-3">
@@ -866,9 +1245,42 @@ export function SwapWidget() {
                   {/* Token Info */}
                   <div className="space-y-2">
                     <div className="token-name-section">
-                      <h3 className="font-medium text-lg truncate">
-                        {token.symbol || token.mint.slice(0, 4)}
-                      </h3>
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-medium text-lg truncate">
+                          {token.symbol || token.mint.slice(0, 4)}
+                        </h3>
+                        <div className="flex space-x-2">
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const success = await copyToClipboard(token.mint);
+                              setStatus(success ? 'Address copied!' : 'Failed to copy');
+                              setTimeout(() => setStatus(''), 2000);
+                            }}
+                            className="p-1 hover:bg-gray-100 rounded-full transition-colors"
+                            title="Copy token address"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                              <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                              <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setChartModalMint(token.mint);
+                            }}
+                            className="p-1 hover:bg-gray-100 rounded-full transition-colors"
+                            title="View chart"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                              <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5z" />
+                              <path d="M8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7z" />
+                              <path d="M14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
                       <p className="text-sm text-gray-500 truncate">
                         {token.name || 'Unknown Token'}
                       </p>
@@ -889,27 +1301,55 @@ export function SwapWidget() {
                           <p className="text-sm text-gray-600">
                             Price: {formatUSD(token.price)}
                           </p>
-                          <p className="text-sm font-semibold text-green-600">
-                            Value: {showValue 
-                              ? formatUSD(tokenValue)
-                              : maskValue(tokenValue)
+                          <Tooltip
+                            content={
+                              <div>
+                                <p className="text-sm">This is an estimated value based on current market price.</p>
+                                <p className="text-sm mt-1">Actual swap value may vary due to:</p>
+                                <ul className="list-disc list-inside text-xs mt-1">
+                                  <li>Market fluctuations</li>
+                                  <li>Available liquidity</li>
+                                  <li>Slippage tolerance</li>
+                                </ul>
+                                {!tradeableTokens.has(token.mint) && (
+                                  <p className="text-red-500 text-sm mt-2">
+                                    Warning: This token might not be tradeable on Jupiter
+                                  </p>
+                                )}
+                              </div>
                             }
-                          </p>
+                          >
+                            <p className="text-sm font-semibold text-green-600 cursor-help">
+                              Estimated Value: {showValue 
+                                ? formatUSD(tokenValue)
+                                : maskValue(tokenValue)
+                              }
+                            </p>
+                          </Tooltip>
                         </>
                       )}
                     </div>
 
                     {/* Swap Button */}
                     <button
-                      onClick={() => swapToken(token)}
-                      disabled={loading || token.error}
+                      onClick={() => setJupiterPopup({ isOpen: true, mintAddress: token.mint })}
+                      disabled={loading || token.error || !tradeabilityStatus[token.mint]?.tradeable}
                       className={`w-full mt-2 px-3 py-2 rounded-lg transition-colors
                         ${token.error 
                           ? 'bg-red-500 hover:bg-red-700' 
-                          : 'bg-blue-500 hover:bg-blue-700'} 
+                          : !tradeabilityStatus[token.mint]?.tradeable
+                            ? 'bg-gray-500'
+                            : 'bg-blue-500 hover:bg-blue-700'} 
                         text-white disabled:opacity-50`}
                     >
-                      {token.error ? 'Failed to Load' : 'Swap'}
+                      {token.error 
+                        ? 'Failed to Load' 
+                        : tradeabilityStatus[token.mint]?.error
+                          ? tradeabilityStatus[token.mint].error
+                          : !tradeabilityStatus[token.mint]?.tradeable
+                            ? 'No Route Available'
+                            : 'Swap'
+                      }
                     </button>
                   </div>
                 </div>
@@ -934,6 +1374,29 @@ export function SwapWidget() {
         }`}>
           {status}
         </div>
+      )}
+
+      {jupiterPopup.isOpen && jupiterPopup.mintAddress && (
+        <JupiterPopup
+          mintAddress={jupiterPopup.mintAddress}
+          onClose={() => setJupiterPopup({ isOpen: false, mintAddress: null })}
+        />
+      )}
+
+      {selectedTokenDetails && (
+        <TokenDetailsModal
+          token={selectedTokenDetails}
+          onClose={() => setSelectedTokenDetails(null)}
+          formatBalance={formatBalance}
+          formatUSD={formatUSD}
+        />
+      )}
+
+      {chartModalMint && (
+        <ChartModal
+          mintAddress={chartModalMint}
+          onClose={() => setChartModalMint(null)}
+        />
       )}
     </div>
   );

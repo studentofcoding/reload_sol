@@ -15,6 +15,9 @@ interface TokenInfo {
   decimals?: number;
   price?: number;
   value?: number;
+  loading?: boolean;
+  error?: boolean;
+  errorMessage?: string;
 }
 
 interface GMGnTokenInfo {
@@ -341,6 +344,17 @@ interface BasicTokenInfo {
   loading?: boolean;
 }
 
+// Add helper function to calculate total value
+const calculateTotalValue = (tokens: TokenInfo[]): number => {
+  return tokens
+    .filter(token => !token.loading && token.value !== undefined)
+    .reduce((total, token) => total + (token.value || 0), 0);
+};
+
+// Add error handling constants
+const RATE_LIMIT_ERROR = 429;
+const RETRY_DELAY = 5000; // 5 seconds
+
 export function SwapWidget() {
   const { connection } = useConnection();
   const { publicKey, signTransaction, sendTransaction } = useWallet();
@@ -356,6 +370,7 @@ export function SwapWidget() {
   });
   const [isMounted, setIsMounted] = React.useState(false);
   const [tokenCounter, setTokenCounter] = React.useState(0);
+  const [showValue, setShowValue] = React.useState(true);
 
   // Load cache on mount
   React.useEffect(() => {
@@ -566,7 +581,7 @@ export function SwapWidget() {
         try {
           // Add delay between requests to respect rate limit
           if (i > 0) {
-            await new Promise(resolve => setTimeout(resolve, 500)); // 500ms between requests
+            await new Promise(resolve => setTimeout(resolve, 500));
           }
 
           const tokenData = await fetchTokenMetadata(token.mint);
@@ -597,8 +612,33 @@ export function SwapWidget() {
               return updatedTokens;
             });
           }
-        } catch (error) {
+        } catch (error: any) {
           console.error(`Error fetching metadata for ${token.mint}:`, error);
+          
+          // Handle rate limit error
+          if (error?.status === RATE_LIMIT_ERROR || error?.message?.includes('429')) {
+            setStatus(`Too many requests. Retrying in 5 seconds...`);
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+            
+            // Retry this token
+            i--; // Decrease counter to retry current token
+            continue;
+          }
+
+          // Update token with error state
+          setTokens(current => {
+            const updatedTokens = [...current];
+            const index = updatedTokens.findIndex(t => t.mint === token.mint);
+            if (index !== -1) {
+              updatedTokens[index] = {
+                ...updatedTokens[index],
+                loading: false,
+                error: true,
+                errorMessage: 'Failed to load metadata'
+              };
+            }
+            return updatedTokens;
+          });
         }
       }
 
@@ -719,6 +759,12 @@ export function SwapWidget() {
     }
   };
 
+  // Update the maskValue function
+  const maskValue = (value: number): string => {
+    const valueStr = formatUSD(value); // First format as USD to get proper formatting
+    return valueStr.replace(/\d/g, '*'); // Replace all digits with asterisks while keeping formatting
+  };
+
   return (
     <div className="swap-container p-4">
       {!isOnline && (
@@ -728,7 +774,8 @@ export function SwapWidget() {
           </p>
         </div>
       )}
-      <div className="token-list mb-4">
+
+      <div className="mb-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center">
             <input
@@ -739,93 +786,152 @@ export function SwapWidget() {
             />
             <span>Select All Tokens</span>
           </div>
+          <div className="text-right flex items-center space-x-2">
+            <div>
+              <p className="text-sm text-gray-600">Total Portfolio Value</p>
+              <p className="text-lg font-bold text-gray-900">
+                {showValue 
+                  ? formatUSD(calculateTotalValue(tokens))
+                  : maskValue(calculateTotalValue(tokens))
+                }
+              </p>
+            </div>
+            <button
+              onClick={() => setShowValue(!showValue)}
+              className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+              title={showValue ? "Hide value" : "Show value"}
+            >
+              {showValue ? (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
+                  <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
+                </svg>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M3.707 2.293a1 1 0 00-1.414 1.414l14 14a1 1 0 001.414-1.414l-1.473-1.473A10.014 10.014 0 0019.542 10C18.268 5.943 14.478 3 10 3a9.958 9.958 0 00-4.512 1.074l-1.78-1.781zm4.261 4.26l1.514 1.515a2.003 2.003 0 012.45 2.45l1.514 1.514a4 4 0 00-5.478-5.478z" clipRule="evenodd" />
+                  <path d="M12.454 16.697L9.75 13.992a4 4 0 01-3.742-3.741L2.335 6.578A9.98 9.98 0 00.458 10c1.274 4.057 5.065 7 9.542 7 .847 0 1.669-.105 2.454-.303z" />
+                </svg>
+              )}
+            </button>
+          </div>
         </div>
         
-        {tokens.map((token, index) => {
-          const mintAddress = token.mint;
-          const accountAddress = token.account;
-          const tokenKey = `token-${mintAddress}-${accountAddress}-${index}`;
-          
-          return (
-            <div key={tokenKey} className="token-item flex items-center justify-between p-2 border rounded mb-2 hover:bg-gray-50">
-              <div className="flex items-center space-x-3">
-                <input
-                  type="checkbox"
-                  checked={token.selected}
-                  onChange={() => toggleToken(token.mint)}
-                  className="mr-2"
-                />
-                {token.loading ? (
-                  <div className="w-8 h-8 bg-gray-200 rounded-full animate-pulse" />
-                ) : token.logoURI ? (
-                  <div className="w-8 h-8 relative">
-                    <Image
-                      src={token.logoURI}
-                      alt={token.symbol || 'token'}
-                      width={32}
-                      height={32}
-                      className="rounded-full"
-                      onError={(e: any) => {
-                        e.target.src = '/fallback-token-icon.png'
-                      }}
+        {/* Token grid container */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          {tokens
+            .filter(token => !token.loading) // Only show processed tokens
+            .map((token, index) => {
+              const mintAddress = token.mint;
+              const accountAddress = token.account;
+              const tokenKey = `token-${mintAddress}-${accountAddress}-${index}`;
+              const tokenValue = token.price 
+                ? Number(token.balance) * token.price / Math.pow(10, token.decimals || 9)
+                : 0;
+              
+              return (
+                <div key={tokenKey} 
+                  className={`token-card bg-white rounded-lg shadow-md p-4 hover:shadow-lg transition-shadow
+                    ${token.error ? 'border-red-300 bg-red-50' : ''}`}
+                >
+                  {/* Card Header with Checkbox and Icon */}
+                  <div className="flex items-start justify-between mb-3">
+                    <input
+                      type="checkbox"
+                      checked={token.selected}
+                      onChange={() => toggleToken(token.mint)}
+                      className="mt-1"
                     />
-                  </div>
-                ) : (
-                  <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">
-                    <span className="text-xs text-gray-500">
-                      {(token.symbol || '??').slice(0, 2)}
-                    </span>
-                  </div>
-                )}
-                <div className="flex flex-col">
-                  <span className="font-medium">
-                    {token.loading ? (
-                      <div className="h-4 w-20 bg-gray-200 rounded animate-pulse" />
+                    {token.logoURI ? (
+                      <div className="w-12 h-12 relative">
+                        <Image
+                          src={token.logoURI}
+                          alt={token.symbol || 'token'}
+                          width={48}
+                          height={48}
+                          className="rounded-full"
+                          onError={(e: any) => {
+                            e.target.src = '/fallback-token-icon.png'
+                          }}
+                        />
+                      </div>
                     ) : (
-                      token.symbol || token.mint.slice(0, 4)
+                      <div className="w-12 h-12 bg-gray-200 rounded-full flex items-center justify-center">
+                        <span className="text-lg text-gray-500">
+                          {(token.symbol || '??').slice(0, 2)}
+                        </span>
+                      </div>
                     )}
-                  </span>
-                  <span className="text-sm text-gray-500">
-                    {token.loading ? (
-                      <div className="h-3 w-24 bg-gray-200 rounded animate-pulse mt-1" />
-                    ) : (
-                      token.name || 'Unknown Token'
-                    )}
-                  </span>
+                  </div>
+
+                  {/* Token Info */}
+                  <div className="space-y-2">
+                    <div className="token-name-section">
+                      <h3 className="font-medium text-lg truncate">
+                        {token.symbol || token.mint.slice(0, 4)}
+                      </h3>
+                      <p className="text-sm text-gray-500 truncate">
+                        {token.name || 'Unknown Token'}
+                      </p>
+                      {token.error && (
+                        <p className="text-xs text-red-600 mt-1">
+                          {token.errorMessage}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Balance, Price and Value */}
+                    <div className="token-balance-section space-y-1">
+                      <p className="text-sm font-medium">
+                        Balance: {formatBalance(token.balance, token.decimals)}
+                      </p>
+                      {token.price && token.price > 0 && (
+                        <>
+                          <p className="text-sm text-gray-600">
+                            Price: {formatUSD(token.price)}
+                          </p>
+                          <p className="text-sm font-semibold text-green-600">
+                            Value: {showValue 
+                              ? formatUSD(tokenValue)
+                              : maskValue(tokenValue)
+                            }
+                          </p>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Swap Button */}
+                    <button
+                      onClick={() => swapToken(token)}
+                      disabled={loading || token.error}
+                      className={`w-full mt-2 px-3 py-2 rounded-lg transition-colors
+                        ${token.error 
+                          ? 'bg-red-500 hover:bg-red-700' 
+                          : 'bg-blue-500 hover:bg-blue-700'} 
+                        text-white disabled:opacity-50`}
+                    >
+                      {token.error ? 'Failed to Load' : 'Swap'}
+                    </button>
+                  </div>
                 </div>
-                <div className="flex flex-col ml-4">
-                  <span className="text-sm">
-                    Balance: {formatBalance(token.balance, token.decimals)}
-                  </span>
-                  {!token.loading && token.price && token.price > 0 && (
-                    <span className="text-xs text-gray-500">
-                      ${formatBalance(BigInt(Math.floor(token.price * 1e9)), 9)}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <button
-                onClick={() => swapToken(token)}
-                disabled={loading || token.loading}
-                className="ml-2 px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-              >
-                {token.loading ? 'Loading...' : 'Swap'}
-              </button>
-            </div>
-          );
-        })}
+              );
+            })}
+        </div>
       </div>
 
       <button 
         onClick={handleAutoSwap} 
         disabled={loading || tokens.filter(t => t.selected).length === 0}
-        className="w-full bg-blue-500 text-white p-4 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+        className="w-full bg-blue-500 text-white p-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
       >
         {loading ? 'Processing...' : 'Swap Selected Tokens'}
       </button>
       
       {status && (
-        <div className="status mt-4 text-sm text-gray-600">
+        <div className={`status mt-4 text-sm ${
+          status.includes('Too many requests') 
+            ? 'text-orange-600 font-medium'
+            : 'text-gray-600'
+        }`}>
           {status}
         </div>
       )}

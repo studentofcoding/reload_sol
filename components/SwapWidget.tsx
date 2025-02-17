@@ -5,9 +5,9 @@ import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import Image from 'next/image';
 
 interface TokenInfo {
-  mint: PublicKey;
+  mint: string;
   balance: bigint;
-  account: PublicKey;
+  account: string;
   selected: boolean;
   symbol?: string;
   name?: string;
@@ -103,26 +103,40 @@ class TokenMetadataCache {
     this.loadFromStorage();
   }
 
+  private getLocalStorage() {
+    if (typeof window !== 'undefined') {
+      return window.localStorage;
+    }
+    return null;
+  }
+
   private loadFromStorage() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEYS.TOKEN_CACHE);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        // Validate stored data structure
-        if (this.isValidCache(parsed)) {
-          this.cache = parsed;
+      const storage = this.getLocalStorage();
+      if (storage) {
+        const stored = storage.getItem(STORAGE_KEYS.TOKEN_CACHE);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (this.isValidCache(parsed)) {
+            this.cache = parsed;
+          }
         }
       }
     } catch (error) {
-      console.error('Error loading cache from storage:', error);
+      console.warn('Error loading cache from storage:', error);
+      // Continue with empty cache
+      this.cache = {};
     }
   }
 
   private saveToStorage() {
     try {
-      localStorage.setItem(STORAGE_KEYS.TOKEN_CACHE, JSON.stringify(this.cache));
+      const storage = this.getLocalStorage();
+      if (storage) {
+        storage.setItem(STORAGE_KEYS.TOKEN_CACHE, JSON.stringify(this.cache));
+      }
     } catch (error) {
-      console.error('Error saving cache to storage:', error);
+      console.warn('Error saving cache to storage:', error);
     }
   }
 
@@ -196,7 +210,7 @@ class TokenMetadataCache {
   }
 }
 
-const rateLimiter = new RateLimiter(1); // 1 request per second
+const rateLimiter = new RateLimiter(2); // Changed from 1 to 2 requests per second
 const tokenCache = new TokenMetadataCache();
 
 // Update interfaces to match API response
@@ -219,11 +233,11 @@ interface TokenResponse {
   }>;
 }
 
-// Update RPC rate limiter
+// Update RPC rate limiter to handle 2 requests per second
 class RPCRateLimiter {
   private static instance: RPCRateLimiter;
   private lastCall: number = 0;
-  private readonly minInterval: number = 1000;
+  private readonly minInterval: number = 500; // Changed from 1000 to 500ms (2 requests per second)
 
   private constructor() {}
 
@@ -247,6 +261,86 @@ class RPCRateLimiter {
   }
 }
 
+// Add new interface for token cache
+interface TokenCacheData {
+  metadata: {
+    [mintAddress: string]: {
+      data: TokenResponse;
+      timestamp: number;
+    }
+  };
+  lastKnownTokens: {
+    [walletAddress: string]: {
+      tokens: TokenInfo[];
+      timestamp: number;
+    }
+  };
+}
+
+// Add a helper function to serialize BigInt
+const serializeBigInt = (obj: any): any => {
+  if (typeof obj === 'bigint') {
+    return obj.toString();
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(serializeBigInt);
+  }
+  if (typeof obj === 'object' && obj !== null) {
+    return Object.fromEntries(
+      Object.entries(obj).map(([key, value]) => [key, serializeBigInt(value)])
+    );
+  }
+  return obj;
+};
+
+// Update the deserialization logic to force string conversion
+const deserializeBigInt = (obj: any): any => {
+  if (Array.isArray(obj)) {
+    return obj.map(deserializeBigInt);
+  }
+  if (typeof obj === 'object' && obj !== null) {
+    return Object.fromEntries(
+      Object.entries(obj).map(([key, value]) => {
+        if (key === 'balance' && typeof value === 'string') {
+          return [key, BigInt(value)];
+        }
+        // Convert PublicKey-like objects to strings
+        if ((key === 'mint' || key === 'account') && value && typeof value === 'object') {
+          try {
+            return [key, new PublicKey(value._bn).toBase58()];
+          } catch {
+            return [key, value.toString()];
+          }
+        }
+        return [key, deserializeBigInt(value)];
+      })
+    );
+  }
+  return obj;
+};
+
+// Add helper function at the top level
+const toPublicKey = (key: string | PublicKey): PublicKey => {
+  return typeof key === 'string' ? new PublicKey(key) : key;
+};
+
+// Update the getMintAddress helper to only handle strings
+const getMintAddress = (mint: string): string => mint;
+
+// Add type guard function to check if value is PublicKey
+const isPublicKey = (value: any): value is PublicKey => {
+  return value instanceof PublicKey;
+};
+
+// Add new interface for basic token info
+interface BasicTokenInfo {
+  mint: string;
+  balance: bigint;
+  account: string;
+  selected: boolean;
+  loading?: boolean;
+}
+
 export function SwapWidget() {
   const { connection } = useConnection();
   const { publicKey, signTransaction, sendTransaction } = useWallet();
@@ -256,43 +350,78 @@ export function SwapWidget() {
   const [selectAll, setSelectAll] = React.useState(true);
   const [isOnline, setIsOnline] = React.useState(true);
   const rpcLimiter = React.useRef(RPCRateLimiter.getInstance());
-  const [tokenCache, setTokenCache] = React.useState<Record<string, { data: any; timestamp: number }>>({});
+  const [tokenCache, setTokenCache] = React.useState<TokenCacheData>({
+    metadata: {},
+    lastKnownTokens: {}
+  });
+  const [isMounted, setIsMounted] = React.useState(false);
+  const [tokenCounter, setTokenCounter] = React.useState(0);
 
-  // Initialize cache from localStorage
+  // Load cache on mount
   React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    
+    setIsMounted(true);
     try {
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem('token_metadata_cache');
+      const storage = localStorage;
+      if (storage) {
+        const stored = storage.getItem('token_metadata_cache');
         if (stored) {
-          setTokenCache(JSON.parse(stored));
-        }
-
-        const storedSelected = localStorage.getItem('selected_tokens');
-        if (storedSelected) {
-          const selectedMints = new Set(JSON.parse(storedSelected));
-          setTokens(current => 
-            current.map(token => ({
-              ...token,
-              selected: selectedMints.has(token.mint.toBase58())
-            }))
-          );
+          const parsedCache = JSON.parse(stored);
+          const validCache: TokenCacheData = {
+            metadata: parsedCache.metadata || {},
+            lastKnownTokens: Object.fromEntries(
+              Object.entries(parsedCache.lastKnownTokens || {}).map(([key, value]) => [
+                key,
+                {
+                  ...value,
+                  tokens: deserializeBigInt(value.tokens)
+                }
+              ])
+            )
+          };
+          setTokenCache(validCache);
+          
+          if (publicKey) {
+            const walletAddress = publicKey.toBase58();
+            const cachedWalletData = validCache.lastKnownTokens[walletAddress];
+            if (cachedWalletData && Date.now() - cachedWalletData.timestamp < 60 * 60 * 1000) {
+              setTokens(cachedWalletData.tokens);
+            }
+          }
         }
       }
     } catch (error) {
-      console.error('Error initializing from storage:', error);
+      console.warn('Error loading from storage:', error);
+      setTokenCache({
+        metadata: {},
+        lastKnownTokens: {}
+      });
     }
-  }, []);
+  }, [publicKey]);
 
-  // Save cache to localStorage when it changes
+  // Save cache when it changes
   React.useEffect(() => {
-    try {
-      if (typeof window !== 'undefined' && Object.keys(tokenCache).length > 0) {
-        localStorage.setItem('token_metadata_cache', JSON.stringify(tokenCache));
+    if (isMounted && typeof window !== 'undefined') {
+      try {
+        const serializedCache = {
+          ...tokenCache,
+          lastKnownTokens: Object.fromEntries(
+            Object.entries(tokenCache.lastKnownTokens).map(([key, value]) => [
+              key,
+              {
+                ...value,
+                tokens: serializeBigInt(value.tokens)
+              }
+            ])
+          )
+        };
+        localStorage.setItem('token_metadata_cache', JSON.stringify(serializedCache));
+      } catch (error) {
+        console.error('Error saving to storage:', error);
       }
-    } catch (error) {
-      console.error('Error saving to storage:', error);
     }
-  }, [tokenCache]);
+  }, [tokenCache, isMounted]);
 
   // Monitor online status
   React.useEffect(() => {
@@ -313,12 +442,16 @@ export function SwapWidget() {
 
   const fetchTokenMetadata = async (mintAddress: string) => {
     try {
-      // Check cache first
-      const cached = tokenCache[mintAddress];
       const now = Date.now();
-      if (cached && now - cached.timestamp < 5 * 60 * 1000) { // 5 minutes cache
+      
+      // Check cache first
+      const cached = tokenCache.metadata[mintAddress];
+      if (cached && now - cached.timestamp < 5 * 60 * 1000) {
         return cached.data;
       }
+
+      // Add delay before API call
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       const response = await fetch(
         `https://data.solanatracker.io/tokens/${mintAddress}`,
@@ -332,58 +465,29 @@ export function SwapWidget() {
       );
 
       if (!response.ok) {
-        throw new Error('Failed to fetch token metadata');
+        throw new Error(`API responded with status ${response.status}`);
       }
 
       const data: TokenResponse = await response.json();
       
-      const activePool = data.pools.find(pool => 
-        pool.price?.usd !== null && pool.price?.usd > 0
-      );
-
-      const tokenData = {
-        address: mintAddress,
-        chainId: 101,
-        decimals: data.token.decimals,
-        name: data.token.name,
-        symbol: data.token.symbol,
-        logoURI: data.token.image,
-        price: activePool?.price?.usd || 0,
-        extensions: {
-          website: data.token.website,
-          twitter: data.token.twitter
-        }
-      };
-
-      // Update cache
+      // Update cache immediately after successful fetch
       setTokenCache(prev => ({
         ...prev,
-        [mintAddress]: {
-          data: tokenData,
-          timestamp: now
+        metadata: {
+          ...prev.metadata,
+          [mintAddress]: {
+            data,
+            timestamp: now
+          }
         }
       }));
 
-      return tokenData;
+      return data;
     } catch (error) {
-      console.error('Error fetching token data:', error);
+      console.error(`Error fetching metadata for ${mintAddress}:`, error);
       return null;
     }
   };
-
-  // Update saveSelectedTokens to check for window
-  const saveSelectedTokens = React.useCallback((tokens: TokenInfo[]) => {
-    try {
-      if (typeof window !== 'undefined') {
-        const selectedMints = tokens
-          .filter(t => t.selected)
-          .map(t => t.mint.toBase58());
-        localStorage.setItem('selected_tokens', JSON.stringify(selectedMints));
-      }
-    } catch (error) {
-      console.error('Error saving selected tokens:', error);
-    }
-  }, []);
 
   const formatUSD = (value: number): string => {
     return new Intl.NumberFormat('en-US', {
@@ -412,67 +516,112 @@ export function SwapWidget() {
     
     try {
       setStatus('Fetching token accounts...');
-      const tokenAccounts = await rpcLimiter.current.call(() => 
-        connection.getTokenAccountsByOwner(publicKey, {
-          programId: TOKEN_PROGRAM_ID,
-        })
-      );
+      
+      const walletAddress = publicKey.toBase58();
+      const cachedWalletData = tokenCache.lastKnownTokens[walletAddress];
+      const now = Date.now();
+      
+      // Check cache first
+      if (cachedWalletData?.tokens && now - (cachedWalletData.timestamp || 0) < 60 * 1000) {
+        setTokens(cachedWalletData.tokens);
+        setStatus('Loaded from cache');
+        return;
+      }
 
-      // Clear existing tokens before fetching new ones
-      setTokens([]);
-      const tokenInfos: TokenInfo[] = [];
-      let processedCount = 0;
-      const totalCount = tokenAccounts.value.length;
+      // Batch RPC calls
+      const tokenAccounts = await connection.getTokenAccountsByOwner(publicKey, {
+        programId: TOKEN_PROGRAM_ID,
+      });
 
-      // Process tokens one by one
-      for (const account of tokenAccounts.value) {
-        try {
+      console.log('Found token accounts:', tokenAccounts.value.length);
+
+      // First pass: Show basic token info
+      const basicTokenInfos = tokenAccounts.value
+        .map(account => {
           const accountData = AccountLayout.decode(account.account.data);
-          const mintAddress = new PublicKey(accountData.mint);
-          const mintKey = mintAddress.toBase58();
+          const amount = BigInt(accountData.amount.toString());
+          const mintAddress = new PublicKey(accountData.mint).toBase58();
+          console.log('Processing account:', mintAddress, 'amount:', amount.toString());
           
-          // Add delay between requests
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          const tokenMeta = await fetchTokenMetadata(mintKey);
-          if (tokenMeta && accountData.amount > 0n) {
-            const price = tokenMeta.price || 0;
-            const value = calculateValue(accountData.amount, tokenMeta.decimals || 9, price);
-            
-            processedCount++;
-            setStatus(`Loading tokens... ${processedCount}/${totalCount}`);
+          return {
+            mint: mintAddress,
+            balance: amount,
+            account: account.pubkey.toBase58(),
+            selected: true,
+            loading: true,
+            symbol: mintAddress.slice(0, 4) + '...',
+            name: 'Loading...',
+            decimals: 9,
+          } as TokenInfo;
+        })
+        .filter(acc => acc.balance > BigInt(0));
 
-            const tokenInfo: TokenInfo = {
-              mint: mintAddress,
-              balance: accountData.amount,
-              account: account.pubkey,
-              selected: true,
-              symbol: tokenMeta.symbol,
-              name: tokenMeta.name,
-              logoURI: tokenMeta.logoURI,
-              decimals: tokenMeta.decimals,
-              price,
-              value,
-            };
+      // Update UI with basic info
+      setTokens(basicTokenInfos);
+      setStatus(`Loading token metadata...`);
 
-            tokenInfos.push(tokenInfo);
-            
-            // Update tokens state after each successful fetch
+      // Second pass: Fetch metadata for each token
+      for (let i = 0; i < basicTokenInfos.length; i++) {
+        const token = basicTokenInfos[i];
+        try {
+          // Add delay between requests to respect rate limit
+          if (i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 500)); // 500ms between requests
+          }
+
+          const tokenData = await fetchTokenMetadata(token.mint);
+          if (tokenData?.token) {
+            const activePool = tokenData.pools?.find(pool => 
+              pool.price?.usd !== null && pool.price?.usd > 0
+            );
+
+            const price = activePool?.price?.usd || 0;
+            const value = calculateValue(token.balance, tokenData.token.decimals || 9, price);
+
+            // Update single token with full metadata
             setTokens(current => {
-              const newTokens = [...current, tokenInfo];
-              return newTokens.sort((a, b) => (b.value || 0) - (a.value || 0));
+              const updatedTokens = [...current];
+              const index = updatedTokens.findIndex(t => t.mint === token.mint);
+              if (index !== -1) {
+                updatedTokens[index] = {
+                  ...updatedTokens[index],
+                  loading: false,
+                  symbol: tokenData.token.symbol || token.mint.slice(0, 4),
+                  name: tokenData.token.name || 'Unknown Token',
+                  logoURI: tokenData.token.image,
+                  decimals: tokenData.token.decimals || 9,
+                  price,
+                  value,
+                };
+              }
+              return updatedTokens;
             });
           }
         } catch (error) {
-          console.error(`Error processing token ${account.pubkey.toBase58()}:`, error);
-          // Continue with next token if one fails
-          processedCount++;
-          setStatus(`Loading tokens... ${processedCount}/${totalCount} (Skipped one token due to error)`);
+          console.error(`Error fetching metadata for ${token.mint}:`, error);
         }
       }
 
-      // Final status update
-      setStatus(tokenInfos.length > 0 ? '' : 'No tokens found');
+      // Final update to cache
+      setTokens(current => {
+        const sortedTokens = [...current].sort((a, b) => (b.value || 0) - (a.value || 0));
+        
+        // Update cache with final token list
+        setTokenCache(prev => ({
+          ...prev,
+          lastKnownTokens: {
+            ...prev.lastKnownTokens,
+            [walletAddress]: {
+              tokens: sortedTokens,
+              timestamp: now
+            }
+          }
+        }));
+
+        return sortedTokens;
+      });
+
+      setStatus('');
     } catch (error) {
       console.error('Error fetching token accounts:', error);
       setStatus('Failed to fetch token accounts');
@@ -487,14 +636,14 @@ export function SwapWidget() {
   }, [publicKey]);
 
   // Update toggleToken to save selection
-  const toggleToken = (mint: string) => {
+  const toggleToken = (mint: string | PublicKey) => {
+    const mintAddress = getMintAddress(typeof mint === 'string' ? mint : mint.toBase58());
     setTokens(prev => {
       const updated = prev.map(token => 
-        token.mint.toBase58() === mint 
+        getMintAddress(token.mint) === mintAddress
           ? { ...token, selected: !token.selected }
           : token
       );
-      saveSelectedTokens(updated);
       return updated;
     });
   };
@@ -504,20 +653,23 @@ export function SwapWidget() {
     setSelectAll(!selectAll);
     setTokens(prev => {
       const updated = prev.map(token => ({ ...token, selected: !selectAll }));
-      saveSelectedTokens(updated);
       return updated;
     });
   };
 
   const swapToken = async (tokenInfo: TokenInfo) => {
-    if (!publicKey) return;
+    if (!publicKey || !signTransaction) return;
     
     setLoading(true);
     try {
-      setStatus(`Swapping ${tokenInfo.mint.toBase58()}...`);
+      const mintAddress = typeof tokenInfo.mint === 'string' 
+        ? tokenInfo.mint 
+        : tokenInfo.mint.toBase58();
+        
+      setStatus(`Swapping ${mintAddress}...`);
       
       const quoteResponse = await fetch(
-        `https://quote-api.jup.ag/v6/quote?inputMint=${tokenInfo.mint.toBase58()}` +
+        `https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}` +
         `&outputMint=So11111111111111111111111111111111111111112` +
         `&amount=${tokenInfo.balance.toString()}` +
         `&slippageBps=50`
@@ -534,15 +686,17 @@ export function SwapWidget() {
       }).then(res => res.json());
 
       const swapTx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
-      swapTx.sign([await signTransaction(swapTx)]);
-      const txid = await connection.sendRawTransaction(swapTx.serialize());
-      await connection.confirmTransaction(txid);
+      if (signTransaction) {
+        const signed = await signTransaction(swapTx);
+        const txid = await connection.sendRawTransaction(signed.serialize());
+        await connection.confirmTransaction(txid);
+      }
 
-      setStatus(`Successfully swapped ${tokenInfo.mint.toBase58()}`);
+      setStatus(`Successfully swapped ${mintAddress}`);
       await fetchTokenAccounts();
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Failed to swap token:`, error);
-      setStatus(`Failed to swap: ${error.message}`);
+      setStatus(`Failed to swap: ${error?.message || 'Unknown error'}`);
     } finally {
       setLoading(false);
     }
@@ -587,18 +741,23 @@ export function SwapWidget() {
           </div>
         </div>
         
-        {tokens.map(token => {
-          const tokenKey = `token-${token.mint.toBase58()}-${token.account.toBase58()}`;
+        {tokens.map((token, index) => {
+          const mintAddress = token.mint;
+          const accountAddress = token.account;
+          const tokenKey = `token-${mintAddress}-${accountAddress}-${index}`;
+          
           return (
             <div key={tokenKey} className="token-item flex items-center justify-between p-2 border rounded mb-2 hover:bg-gray-50">
               <div className="flex items-center space-x-3">
                 <input
                   type="checkbox"
                   checked={token.selected}
-                  onChange={() => toggleToken(token.mint.toBase58())}
+                  onChange={() => toggleToken(token.mint)}
                   className="mr-2"
                 />
-                {token.logoURI ? (
+                {token.loading ? (
+                  <div className="w-8 h-8 bg-gray-200 rounded-full animate-pulse" />
+                ) : token.logoURI ? (
                   <div className="w-8 h-8 relative">
                     <Image
                       src={token.logoURI}
@@ -620,17 +779,25 @@ export function SwapWidget() {
                 )}
                 <div className="flex flex-col">
                   <span className="font-medium">
-                    {token.symbol || token.mint.toBase58().slice(0, 4)}
+                    {token.loading ? (
+                      <div className="h-4 w-20 bg-gray-200 rounded animate-pulse" />
+                    ) : (
+                      token.symbol || token.mint.slice(0, 4)
+                    )}
                   </span>
                   <span className="text-sm text-gray-500">
-                    {token.name || 'Unknown Token'}
+                    {token.loading ? (
+                      <div className="h-3 w-24 bg-gray-200 rounded animate-pulse mt-1" />
+                    ) : (
+                      token.name || 'Unknown Token'
+                    )}
                   </span>
                 </div>
                 <div className="flex flex-col ml-4">
                   <span className="text-sm">
                     Balance: {formatBalance(token.balance, token.decimals)}
                   </span>
-                  {token.price > 0 && (
+                  {!token.loading && token.price && token.price > 0 && (
                     <span className="text-xs text-gray-500">
                       ${formatBalance(BigInt(Math.floor(token.price * 1e9)), 9)}
                     </span>
@@ -639,10 +806,10 @@ export function SwapWidget() {
               </div>
               <button
                 onClick={() => swapToken(token)}
-                disabled={loading}
+                disabled={loading || token.loading}
                 className="ml-2 px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-700 disabled:opacity-50"
               >
-                Swap
+                {token.loading ? 'Loading...' : 'Swap'}
               </button>
             </div>
           );

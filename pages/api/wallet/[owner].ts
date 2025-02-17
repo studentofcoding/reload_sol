@@ -25,14 +25,14 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
-  const { mintAddress } = req.query;
+  const { owner } = req.query;
 
-  if (!mintAddress || typeof mintAddress !== 'string') {
-    return res.status(400).json({ error: 'Missing mint address' });
+  if (!owner || typeof owner !== 'string') {
+    return res.status(400).json({ error: 'Missing wallet address' });
   }
 
   if (!API_KEY) {
-    return res.status(500).json({ error: 'API key not configured' });
+    return res.status(500).json({ error: 'Solana Tracker API key not configured. Please add SOLANATRACKER_API_KEY to .env.local' });
   }
 
   try {
@@ -43,7 +43,7 @@ export default async function handler(
 
   try {
     const response = await fetch(
-      `${BASE_URL}/tokens/${mintAddress}`,
+      `${BASE_URL}/wallet/${owner}`,
       {
         headers: {
           'Accept': 'application/json',
@@ -62,35 +62,27 @@ export default async function handler(
     const data = await response.json();
     
     // Transform the data to match our expected format
-    const tokenData = {
-      address: mintAddress,
-      chainId: 101, // Solana mainnet
-      decimals: data.decimals || 9,
-      name: data.name || 'Unknown Token',
-      symbol: data.symbol || 'UNKNOWN',
-      logoURI: data.image || null,
-      price: data.price || 0,
-      tags: [],
-      extensions: {
-        coingeckoId: data.coingeckoId,
-        website: data.website,
-        twitter: data.twitter
-      },
-      risk: {
-        score: data.risk?.risk || 0,
-        details: data.risk?.details || null
-      },
-      event: {
-        details: data.event?.another_details || null
-      }
+    const walletData = {
+      tokens: data.tokens.map((token: any) => ({
+        mint: token.token.mint,
+        name: token.token.name,
+        symbol: token.token.symbol,
+        decimals: token.token.decimals || 9,
+        logoURI: token.token.image,
+        price: token.price || 0,
+        value: token.value || 0,
+        risk: token.risk?.risk || 0,
+        riskDetails: token.risk?.details || null,
+        eventDetails: token.event?.another_details || null
+      }))
     };
 
     res.setHeader('Cache-Control', 's-maxage=60'); // Cache for 60 seconds
-    res.status(200).json(tokenData);
-  } catch (error) {
-    console.error('Token fetch error:', error);
+    res.status(200).json(walletData);
+  } catch (error: any) {
+    console.error('Wallet data fetch error:', error);
     res.status(500).json({ 
-      error: 'Failed to fetch token data',
+      error: 'Failed to fetch wallet data',
       details: error.message 
     });
   }

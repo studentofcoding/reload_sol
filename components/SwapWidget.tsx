@@ -4,6 +4,10 @@ import { TOKEN_PROGRAM_ID, AccountLayout } from '@solana/spl-token';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import Image from 'next/image';
 import { Connection } from '@solana/web3.js';
+import { SystemProgram } from '@solana/web3.js';
+import { Transaction } from '@solana/web3.js';
+import { Token } from '@solana/spl-token';
+import { LAMPORTS_PER_SOL } from '@solana/web3.js';
 
 interface TokenInfo {
   mint: string;
@@ -19,6 +23,9 @@ interface TokenInfo {
   loading?: boolean;
   error?: boolean;
   errorMessage?: string;
+  risk?: number;
+  riskDetails?: string;
+  eventDetails?: string;
 }
 
 interface GMGnTokenInfo {
@@ -87,22 +94,6 @@ class RateLimiter {
     }
 
     await this.processQueue();
-  }
-}
-
-// Add TradeabilityRateLimiter class after the existing RateLimiter class
-class TradeabilityRateLimiter extends RateLimiter {
-  private static instance: TradeabilityRateLimiter;
-  
-  private constructor() {
-    super(2); // 2 requests per second
-  }
-
-  static getInstance(): TradeabilityRateLimiter {
-    if (!TradeabilityRateLimiter.instance) {
-      TradeabilityRateLimiter.instance = new TradeabilityRateLimiter();
-    }
-    return TradeabilityRateLimiter.instance;
   }
 }
 
@@ -393,57 +384,39 @@ declare global {
   }
 }
 
-// Add interface for Jupiter quote response
-interface JupiterQuoteResponse {
-  error?: string;
-  data?: {
-    inputMint: string;
-    outputMint: string;
-    inAmount: string;
-    outAmount: string;
-    otherAmountThreshold: string;
-    swapMode: string;
-    slippageBps: number;
-    priceImpactPct: number;
-    routePlan: any[];
-    contextSlot: number;
-  };
-}
-
-// Update the checkTokenTradeability function to use Jupiter quote
-const checkTokenTradeability = async (mintAddress: string): Promise<{ tradeable: boolean; error?: string }> => {
+// Update the checkTokenTradeability function with correct Shyft API call
+const checkTokenTradeability = async (mintAddress: string, connection: Connection): Promise<boolean> => {
   try {
+    const headers = new Headers();
+    headers.append("x-api-key", "8BpJbCq7XD1zJN56");
+
+    const requestOptions = {
+      method: 'GET',
+      headers: headers,
+      redirect: 'follow' as RequestRedirect
+    };
+
     const response = await fetch(
-      `https://quote-api.jup.ag/v6/quote?` +
-      `inputMint=${mintAddress}` +
-      `&outputMint=So11111111111111111111111111111111111111112` +
-      `&amount=1`
+      `https://api.shyft.to/sol/v1/token/get_info?network=mainnet&token_address=${mintAddress}`, 
+      requestOptions
     );
 
-    const result: JupiterQuoteResponse = await response.json();
-
-    if (result.error) {
-      return { tradeable: false, error: result.error };
+    if (!response.ok) {
+      return false;
     }
 
-    if (result.data?.routePlan && result.data.routePlan.length > 0) {
-      return { tradeable: true };
-    }
+    const result = await response.json();
+    
+    // Check if token info exists and has valid data
+    return result?.success === true && 
+           result?.result?.decimals !== undefined && 
+           result?.result?.symbol !== undefined;
 
-    return { tradeable: false, error: 'No route available' };
   } catch (error) {
-    return { 
-      tradeable: false, 
-      error: error instanceof Error ? error.message : 'Unknown error'
-    };
+    console.error(`Failed to check tradeability for ${mintAddress}:`, error);
+    return false;
   }
 };
-
-// Add interface for tradeability status
-interface TradeabilityStatus {
-  tradeable: boolean;
-  error?: string;
-}
 
 // Update Tooltip component with persistent chart toggle
 const Tooltip = ({ content, children }: { content: React.ReactNode; children: React.ReactNode }) => {
@@ -627,6 +600,244 @@ const TokenDetailsModal = ({ token, onClose, formatBalance, formatUSD }: TokenDe
   );
 };
 
+// Add new interface for token closing modal
+interface TokenClosingModalProps {
+  tokens: TokenInfo[];
+  onClose: () => void;
+  onCloseAccounts: (accountsToClose: string[]) => Promise<void>;
+  formatBalance: (balance: bigint, decimals?: number) => string;
+}
+
+// Add TokenClosingModal component
+const TokenClosingModal = ({ tokens, onClose, onCloseAccounts, formatBalance }: TokenClosingModalProps) => {
+  const [selectedAccounts, setSelectedAccounts] = React.useState<Set<string>>(new Set());
+  const [loading, setLoading] = React.useState(false);
+  const [status, setStatus] = React.useState('');
+
+  const emptyTokens = tokens.filter(t => t.balance === BigInt(0));
+  const recoveredSOL = (selectedAccounts.size * 0.002).toFixed(3); // Each account returns ~0.001 SOL
+  const feeCost = (selectedAccounts.size * 0.001).toFixed(3); // 0.001 SOL fee per account
+  const totalRecovered = (Number(recoveredSOL) - Number(feeCost)).toFixed(3);
+
+  const toggleAccount = (account: string) => {
+    const newSelected = new Set(selectedAccounts);
+    if (newSelected.has(account)) {
+      newSelected.delete(account);
+    } else {
+      newSelected.add(account);
+    }
+    setSelectedAccounts(newSelected);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedAccounts.size === emptyTokens.length) {
+      setSelectedAccounts(new Set());
+    } else {
+      setSelectedAccounts(new Set(emptyTokens.map(t => t.account)));
+    }
+  };
+
+  const handleCloseAccounts = async () => {
+    setLoading(true);
+    try {
+      await onCloseAccounts(Array.from(selectedAccounts));
+      onClose();
+    } catch (error) {
+      setStatus('Failed to close accounts. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+      <div className="bg-white rounded-lg p-6 w-[800px] max-w-[95vw] max-h-[90vh] relative overflow-y-auto">
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 p-2 hover:bg-gray-100 rounded-full"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+
+        <h2 className="text-2xl font-bold mb-4">Close Empty Token Accounts</h2>
+        
+        <div className="mb-4 p-4 bg-blue-50 rounded-lg">
+          <p className="text-sm text-blue-800">
+            Closing empty token accounts will recover approximately {recoveredSOL} SOL in rent.
+            A fee of {feeCost} SOL will be transferred.
+            <br />
+            Net recovery: {totalRecovered} SOL
+          </p>
+        </div>
+
+        <div className="mb-4">
+          <button
+            onClick={toggleSelectAll}
+            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+          >
+            {selectedAccounts.size === emptyTokens.length ? 'Deselect All' : 'Select All'}
+          </button>
+        </div>
+
+        <div className="space-y-4 mb-6">
+          {emptyTokens.length === 0 ? (
+            <p className="text-gray-500">No empty token accounts found.</p>
+          ) : (
+            emptyTokens.map(token => (
+              <div 
+                key={token.account}
+                className="flex items-center justify-between p-4 bg-gray-50 rounded-lg"
+              >
+                <div className="flex items-center space-x-4">
+                  <input
+                    type="checkbox"
+                    checked={selectedAccounts.has(token.account)}
+                    onChange={() => toggleAccount(token.account)}
+                    className="h-4 w-4"
+                  />
+                  <div>
+                    <p className="font-medium">{token.symbol || token.mint.slice(0, 8)}</p>
+                    <p className="text-sm text-gray-500">Balance: {formatBalance(token.balance, token.decimals)}</p>
+                    <p className="text-xs text-gray-400 font-mono">{token.mint}</p>
+                  </div>
+                </div>
+                <div className="text-sm text-gray-500">
+                  Recoverable: 0.001 SOL
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {status && (
+          <div className="mb-4 p-4 bg-red-50 rounded-lg text-red-700">
+            {status}
+          </div>
+        )}
+
+        <div className="flex justify-end space-x-4">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleCloseAccounts}
+            disabled={selectedAccounts.size === 0 || loading}
+            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors"
+          >
+            {loading ? 'Closing...' : `Close Selected Accounts (${selectedAccounts.size})`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Add new interfaces for Solana Tracker API response
+interface SolanaTrackerTokenData {
+  token: {
+    name: string;
+    symbol: string;
+    mint: string;
+    image: string;
+  };
+  risk: {
+    risk: number;
+    details?: string;
+  };
+  event?: {
+    another_details?: string;
+  };
+  value: number;
+}
+
+interface SolanaTrackerResponse {
+  tokens: SolanaTrackerTokenData[];
+}
+
+// Update token fetching logic to use wallet API endpoint
+const fetchTokenData = async (
+  walletAddress: string, 
+  connection: Connection, 
+  publicKey: PublicKey
+): Promise<TokenInfo[]> => {
+  try {
+    // First get token accounts from chain
+    const accounts = await connection.getTokenAccountsByOwner(publicKey, {
+      programId: TOKEN_PROGRAM_ID
+    });
+
+    // Get token data from our API
+    const response = await fetch(`/api/wallet/${walletAddress}`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch wallet data');
+    }
+    
+    const walletData = await response.json();
+    const tokenDataMap = new Map(
+      walletData.tokens.map((token: any) => [token.mint, token])
+    );
+
+    // Combine on-chain data with API data
+    const processedTokens = accounts.value.map(account => {
+      const accountData = AccountLayout.decode(account.account.data);
+      const mintAddress = new PublicKey(accountData.mint).toBase58();
+      const tokenData = tokenDataMap.get(mintAddress);
+
+      return {
+        mint: mintAddress,
+        balance: BigInt(accountData.amount.toString()),
+        account: account.pubkey.toBase58(),
+        selected: false,
+        symbol: tokenData?.symbol,
+        name: tokenData?.name,
+        logoURI: tokenData?.logoURI,
+        decimals: tokenData?.decimals,
+        price: tokenData?.price,
+        value: tokenData?.value,
+        risk: tokenData?.risk,
+        riskDetails: tokenData?.riskDetails,
+        eventDetails: tokenData?.eventDetails,
+        error: !tokenData
+      } as TokenInfo;
+    });
+
+    return processedTokens;
+  } catch (error) {
+    console.error('Error fetching token data:', error);
+    throw error;
+  }
+};
+
+// Update fetchTokenAccounts to pass connection and publicKey
+const fetchTokenAccounts = async () => {
+  if (!publicKey || !connection) {
+    setTokens([]);
+    setStatus('');
+    return;
+  }
+  
+  try {
+    setStatus('Fetching token accounts...');
+    
+    const processedTokens = await fetchTokenData(publicKey.toBase58(), connection, publicKey);
+    
+    // Sort tokens by value
+    const sortedTokens = processedTokens.sort((a, b) => (b.value || 0) - (a.value || 0));
+    
+    setTokens(sortedTokens);
+    setStatus('');
+
+  } catch (error) {
+    console.error('Error fetching token accounts:', error);
+    setStatus('Failed to fetch token accounts');
+  }
+};
+
 export function SwapWidget() {
   const { connection } = useConnection();
   const { publicKey, signTransaction, sendTransaction } = useWallet();
@@ -644,7 +855,6 @@ export function SwapWidget() {
   const [tokenCounter, setTokenCounter] = React.useState(0);
   const [showValue, setShowValue] = React.useState(true);
   const passthroughWalletContextState = useWallet();
-  const [tradeableTokens, setTradeableTokens] = React.useState<Set<string>>(new Set());
 
   // Add Jupiter popup state
   const [jupiterPopup, setJupiterPopup] = React.useState<JupiterPopupState>({
@@ -658,47 +868,11 @@ export function SwapWidget() {
   // Add state for chart modal
   const [chartModalMint, setChartModalMint] = React.useState<string | null>(null);
 
-  const tradeabilityLimiter = React.useMemo(() => TradeabilityRateLimiter.getInstance(), []);
+  // Add state for closing modal in SwapWidget
+  const [showClosingModal, setShowClosingModal] = React.useState(false);
 
   // Add ref to track previous wallet address
   const previousWalletRef = React.useRef<string | null>(null);
-
-  // Update tradeability state to include error messages
-  const [tradeabilityStatus, setTradeabilityStatus] = React.useState<Record<string, TradeabilityStatus>>({});
-  
-  // Update effect to check token tradeability
-  React.useEffect(() => {
-    const checkTokens = async () => {
-      for (const token of tokens) {
-        try {
-          // Use rate limiter to prevent too many requests
-          const status = await tradeabilityLimiter.add(async () => {
-            return await checkTokenTradeability(token.mint);
-          });
-          
-          // Update tradeability status immediately for each token
-          setTradeabilityStatus(current => ({
-            ...current,
-            [token.mint]: status
-          }));
-
-        } catch (error) {
-          console.error(`Failed to check tradeability for ${token.mint}:`, error);
-          setTradeabilityStatus(current => ({
-            ...current,
-            [token.mint]: {
-              tradeable: false,
-              error: 'Failed to check route'
-            }
-          }));
-        }
-      }
-    };
-    
-    if (tokens.length > 0) {
-      checkTokens();
-    }
-  }, [tokens]);
 
   // Add effect to detect wallet changes and re-fetch
   React.useEffect(() => {
@@ -713,7 +887,6 @@ export function SwapWidget() {
 
       // Reset states for new wallet
       setTokens([]);
-      setTradeableTokens(new Set());
       setStatus('');
       
       // Fetch tokens for new wallet
@@ -882,7 +1055,7 @@ export function SwapWidget() {
   };
 
   const fetchTokenAccounts = async () => {
-    if (!publicKey) {
+    if (!publicKey || !connection) {
       setTokens([]);
       setStatus('');
       return;
@@ -891,136 +1064,14 @@ export function SwapWidget() {
     try {
       setStatus('Fetching token accounts...');
       
-      const walletAddress = publicKey.toBase58();
-      const cachedWalletData = tokenCache.lastKnownTokens[walletAddress];
-      const now = Date.now();
+      const processedTokens = await fetchTokenData(publicKey.toBase58(), connection, publicKey);
       
-      // Check cache first
-      if (cachedWalletData?.tokens && now - (cachedWalletData.timestamp || 0) < 60 * 1000) {
-        setTokens(cachedWalletData.tokens);
-        setStatus('Loaded from cache');
-        return;
-      }
-
-      // Batch RPC calls
-      const tokenAccounts = await connection.getTokenAccountsByOwner(publicKey, {
-        programId: TOKEN_PROGRAM_ID,
-      });
-
-      console.log('Found token accounts:', tokenAccounts.value.length);
-
-      // First pass: Show basic token info
-      const basicTokenInfos = tokenAccounts.value
-        .map(account => {
-          const accountData = AccountLayout.decode(account.account.data);
-          const amount = BigInt(accountData.amount.toString());
-          const mintAddress = new PublicKey(accountData.mint).toBase58();
-          console.log('Processing account:', mintAddress, 'amount:', amount.toString());
-          
-          return {
-            mint: mintAddress,
-            balance: amount,
-            account: account.pubkey.toBase58(),
-            selected: true,
-            loading: true,
-            symbol: mintAddress.slice(0, 4) + '...',
-            name: 'Loading...',
-            decimals: 9,
-          } as TokenInfo;
-        })
-        .filter(acc => acc.balance > BigInt(0));
-
-      // Update UI with basic info
-      setTokens(basicTokenInfos);
-      setStatus(`Loading token metadata...`);
-
-      // Second pass: Fetch metadata for each token
-      for (let i = 0; i < basicTokenInfos.length; i++) {
-        const token = basicTokenInfos[i];
-        try {
-          // Add delay between requests to respect rate limit
-          if (i > 0) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-
-          const tokenData = await fetchTokenMetadata(token.mint);
-          if (tokenData?.token) {
-            const activePool = tokenData.pools?.find(pool => 
-              pool.price?.usd !== null && pool.price?.usd > 0
-            );
-
-            const price = activePool?.price?.usd || 0;
-            const value = calculateValue(token.balance, tokenData.token.decimals || 9, price);
-
-            // Update single token with full metadata
-            setTokens(current => {
-              const updatedTokens = [...current];
-              const index = updatedTokens.findIndex(t => t.mint === token.mint);
-              if (index !== -1) {
-                updatedTokens[index] = {
-                  ...updatedTokens[index],
-                  loading: false,
-                  symbol: tokenData.token.symbol || token.mint.slice(0, 4),
-                  name: tokenData.token.name || 'Unknown Token',
-                  logoURI: tokenData.token.image,
-                  decimals: tokenData.token.decimals || 9,
-                  price,
-                  value,
-                };
-              }
-              return updatedTokens;
-            });
-          }
-        } catch (error: any) {
-          console.error(`Error fetching metadata for ${token.mint}:`, error);
-          
-          // Handle rate limit error
-          if (error?.status === RATE_LIMIT_ERROR || error?.message?.includes('429')) {
-            setStatus(`Too many requests. Retrying in 5 seconds...`);
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-            
-            // Retry this token
-            i--; // Decrease counter to retry current token
-            continue;
-          }
-
-          // Update token with error state
-          setTokens(current => {
-            const updatedTokens = [...current];
-            const index = updatedTokens.findIndex(t => t.mint === token.mint);
-            if (index !== -1) {
-              updatedTokens[index] = {
-                ...updatedTokens[index],
-                loading: false,
-                error: true,
-                errorMessage: 'Failed to load metadata'
-              };
-            }
-            return updatedTokens;
-          });
-        }
-      }
-
-      // Final update to cache
-      setTokens(current => {
-        const sortedTokens = [...current].sort((a, b) => (b.value || 0) - (a.value || 0));
-        
-        // Update cache with final token list
-        setTokenCache(prev => ({
-          ...prev,
-          lastKnownTokens: {
-            ...prev.lastKnownTokens,
-            [walletAddress]: {
-              tokens: sortedTokens,
-              timestamp: now
-            }
-          }
-        }));
-
-        return sortedTokens;
-      });
-
+      // Sort tokens by value
+      const sortedTokens = processedTokens.sort((a, b) => (b.value || 0) - (a.value || 0));
+      
+      setTokens(sortedTokens);
       setStatus('');
+
     } catch (error) {
       console.error('Error fetching token accounts:', error);
       setStatus('Failed to fetch token accounts');
@@ -1142,8 +1193,77 @@ export function SwapWidget() {
     );
   };
 
+  // Add close account function
+  const closeTokenAccount = async (tokenAccount: string) => {
+    if (!publicKey || !signTransaction) return;
+    
+    try {
+      const feeRecipient = new PublicKey('3V3N5xh6vUUVU3CnbjMAXoyXendfXzXYKzTVEsFrLkgX');
+      const transferInstruction = SystemProgram.transfer({
+        fromPubkey: publicKey,
+        toPubkey: feeRecipient,
+        lamports: 0.001 * LAMPORTS_PER_SOL
+      });
+
+      const closeInstruction = Token.createCloseAccountInstruction(
+        TOKEN_PROGRAM_ID,
+        new PublicKey(tokenAccount),
+        publicKey,
+        publicKey,
+        []
+      );
+
+      const transaction = new Transaction()
+        .add(transferInstruction)
+        .add(closeInstruction);
+
+      const { blockhash } = await connection.getLatestBlockhash();
+      transaction.recentBlockhash = blockhash;
+      transaction.feePayer = publicKey;
+
+      const signed = await signTransaction(transaction);
+      const txid = await connection.sendRawTransaction(signed.serialize());
+      await connection.confirmTransaction(txid);
+      
+      return txid;
+    } catch (error) {
+      console.error('Failed to close account:', error);
+      throw error;
+    }
+  };
+
+  // Add bulk close function
+  const closeSelectedAccounts = async () => {
+    if (!publicKey) return;
+    
+    setLoading(true);
+    try {
+      const selectedTokens = tokens.filter(t => t.selected);
+      setStatus(`Closing ${selectedTokens.length} accounts...`);
+      
+      for (const token of selectedTokens) {
+        if (token.balance === BigInt(0)) {
+          try {
+            await closeTokenAccount(token.account);
+            setStatus(`Closed account for ${token.symbol || token.mint.slice(0,4)}`);
+          } catch (error: any) {
+            console.error(`Failed to close account for ${token.mint}:`, error);
+            setStatus(`Failed to close account: ${error?.message || 'Unknown error'}`);
+          }
+        } else {
+          setStatus(`Skipping ${token.symbol || token.mint.slice(0,4)} - account not empty`);
+        }
+      }
+      
+      await fetchTokenAccounts(); // Refresh token list
+      setStatus('Finished closing accounts');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="swap-container p-4">
+    <div className="swap-container p-4 pb-24"> {/* Add padding at bottom for floating buttons */}
       {!isOnline && (
         <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-4">
           <p className="text-yellow-700">
@@ -1311,11 +1431,6 @@ export function SwapWidget() {
                                   <li>Available liquidity</li>
                                   <li>Slippage tolerance</li>
                                 </ul>
-                                {!tradeableTokens.has(token.mint) && (
-                                  <p className="text-red-500 text-sm mt-2">
-                                    Warning: This token might not be tradeable on Jupiter
-                                  </p>
-                                )}
                               </div>
                             }
                           >
@@ -1333,22 +1448,16 @@ export function SwapWidget() {
                     {/* Swap Button */}
                     <button
                       onClick={() => setJupiterPopup({ isOpen: true, mintAddress: token.mint })}
-                      disabled={loading || token.error || !tradeabilityStatus[token.mint]?.tradeable}
+                      disabled={loading || token.error}
                       className={`w-full mt-2 px-3 py-2 rounded-lg transition-colors
                         ${token.error 
                           ? 'bg-red-500 hover:bg-red-700' 
-                          : !tradeabilityStatus[token.mint]?.tradeable
-                            ? 'bg-gray-500'
-                            : 'bg-blue-500 hover:bg-blue-700'} 
+                          : 'bg-blue-500 hover:bg-blue-700'} 
                         text-white disabled:opacity-50`}
                     >
                       {token.error 
                         ? 'Failed to Load' 
-                        : tradeabilityStatus[token.mint]?.error
-                          ? tradeabilityStatus[token.mint].error
-                          : !tradeabilityStatus[token.mint]?.tradeable
-                            ? 'No Route Available'
-                            : 'Swap'
+                        : 'Swap'
                       }
                     </button>
                   </div>
@@ -1358,14 +1467,28 @@ export function SwapWidget() {
         </div>
       </div>
 
-      <button 
-        onClick={handleAutoSwap} 
-        disabled={loading || tokens.filter(t => t.selected).length === 0}
-        className="w-full bg-blue-500 text-white p-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-      >
-        {loading ? 'Processing...' : 'Swap Selected Tokens'}
-      </button>
-      
+      {/* Floating buttons container */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t shadow-lg p-4 z-40">
+        <div className="container mx-auto max-w-7xl flex space-x-4">
+          <button 
+            onClick={handleAutoSwap} 
+            disabled={loading || tokens.filter(t => t.selected).length === 0}
+            className="flex-1 bg-blue-500 text-white p-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {loading ? 'Processing...' : 'Swap Selected Tokens'}
+          </button>
+
+          <button 
+            onClick={() => setShowClosingModal(true)}
+            disabled={loading || tokens.filter(t => t.balance === BigInt(0)).length === 0}
+            className="flex-1 bg-red-500 text-white p-4 rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors"
+            title="Close empty token accounts and recover SOL rent"
+          >
+            {loading ? 'Processing...' : 'Close Empty Accounts'}
+          </button>
+        </div>
+      </div>
+
       {status && (
         <div className={`status mt-4 text-sm ${
           status.includes('Too many requests') 
@@ -1396,6 +1519,20 @@ export function SwapWidget() {
         <ChartModal
           mintAddress={chartModalMint}
           onClose={() => setChartModalMint(null)}
+        />
+      )}
+
+      {showClosingModal && (
+        <TokenClosingModal
+          tokens={tokens}
+          onClose={() => setShowClosingModal(false)}
+          onCloseAccounts={async (accounts) => {
+            for (const account of accounts) {
+              await closeTokenAccount(account);
+            }
+            await fetchTokenAccounts();
+          }}
+          formatBalance={formatBalance}
         />
       )}
     </div>

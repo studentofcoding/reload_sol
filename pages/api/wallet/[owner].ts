@@ -25,23 +25,29 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
+  console.log('Handling wallet request:', req.query);
   const { owner } = req.query;
 
   if (!owner || typeof owner !== 'string') {
+    console.log('Invalid owner:', owner);
     return res.status(400).json({ error: 'Missing wallet address' });
   }
 
   if (!API_KEY) {
+    console.log('Missing API key');
     return res.status(500).json({ error: 'Solana Tracker API key not configured. Please add SOLANATRACKER_API_KEY to .env.local' });
   }
 
   try {
+    console.log('Applying rate limit for:', owner);
     await runMiddleware(req, res, limiter);
   } catch (error) {
+    console.log('Rate limit exceeded for:', owner);
     return res.status(429).json({ error: 'Too many requests' });
   }
 
   try {
+    console.log('Fetching data from Solana Tracker for:', owner);
     const response = await fetch(
       `${BASE_URL}/wallet/${owner}`,
       {
@@ -60,6 +66,7 @@ export default async function handler(
     }
 
     const data = await response.json();
+    console.log('Received data for:', owner, 'token count:', data.tokens.length);
     
     // Transform the data to match our expected format
     const walletData = {
@@ -69,13 +76,27 @@ export default async function handler(
         symbol: token.token.symbol,
         decimals: token.token.decimals || 9,
         logoURI: token.token.image,
-        price: token.price || 0,
+        balance: token.balance || 0,
         value: token.value || 0,
-        risk: token.risk?.risk || 0,
-        riskDetails: token.risk?.details || null,
-        eventDetails: token.event?.another_details || null
+        risk: token.risk || 0,
       }))
     };
+
+    console.log('Transformed data for:', owner, 'token count:', walletData.tokens.length);
+    console.log('Full wallet data:', JSON.stringify(walletData, null, 2));
+    console.log('Token details:');
+    walletData.tokens.forEach((token, index) => {
+      console.log(`Token ${index + 1}:`, {
+        mint: token.mint,
+        name: token.name,
+        symbol: token.symbol,
+        decimals: token.decimals,
+        logoURI: token.logoURI,
+        balance: token.balance,
+        value: token.value,
+        risk: token.risk
+      });
+    });
 
     res.setHeader('Cache-Control', 's-maxage=60'); // Cache for 60 seconds
     res.status(200).json(walletData);

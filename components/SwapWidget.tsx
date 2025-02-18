@@ -1,12 +1,11 @@
 import * as React from 'react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
-import { TOKEN_PROGRAM_ID, AccountLayout } from '@solana/spl-token';
+import { TOKEN_PROGRAM_ID, AccountLayout, createCloseAccountInstruction } from '@solana/spl-token';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import Image from 'next/image';
 import { Connection } from '@solana/web3.js';
 import { SystemProgram } from '@solana/web3.js';
 import { Transaction } from '@solana/web3.js';
-import { Token } from '@solana/spl-token';
 import { LAMPORTS_PER_SOL } from '@solana/web3.js';
 
 interface TokenInfo {
@@ -1193,11 +1192,29 @@ export function SwapWidget() {
     );
   };
 
-  // Add close account function
+  // Update closeTokenAccount function to close account first, then transfer fee
   const closeTokenAccount = async (tokenAccount: string) => {
     if (!publicKey || !signTransaction) return;
     
     try {
+      // First close the token account
+      const closeInstruction = createCloseAccountInstruction(
+        new PublicKey(tokenAccount), // Account to close
+        publicKey,                   // Destination for rent SOL
+        publicKey,                   // Authority
+        []                          // Multisig signers (empty array if not multisig)
+      );
+
+      let transaction = new Transaction().add(closeInstruction);
+      let { blockhash } = await connection.getLatestBlockhash();
+      transaction.recentBlockhash = blockhash;
+      transaction.feePayer = publicKey;
+
+      let signed = await signTransaction(transaction);
+      let closeAccountTxid = await connection.sendRawTransaction(signed.serialize());
+      await connection.confirmTransaction(closeAccountTxid);
+
+      // After successful close, transfer the fee
       const feeRecipient = new PublicKey('3V3N5xh6vUUVU3CnbjMAXoyXendfXzXYKzTVEsFrLkgX');
       const transferInstruction = SystemProgram.transfer({
         fromPubkey: publicKey,
@@ -1205,27 +1222,17 @@ export function SwapWidget() {
         lamports: 0.001 * LAMPORTS_PER_SOL
       });
 
-      const closeInstruction = Token.createCloseAccountInstruction(
-        TOKEN_PROGRAM_ID,
-        new PublicKey(tokenAccount),
-        publicKey,
-        publicKey,
-        []
-      );
-
-      const transaction = new Transaction()
-        .add(transferInstruction)
-        .add(closeInstruction);
-
-      const { blockhash } = await connection.getLatestBlockhash();
+      // Get fresh blockhash for fee transfer
+      transaction = new Transaction().add(transferInstruction);
+      ({ blockhash } = await connection.getLatestBlockhash());
       transaction.recentBlockhash = blockhash;
       transaction.feePayer = publicKey;
 
-      const signed = await signTransaction(transaction);
-      const txid = await connection.sendRawTransaction(signed.serialize());
-      await connection.confirmTransaction(txid);
+      signed = await signTransaction(transaction);
+      const feeTxid = await connection.sendRawTransaction(signed.serialize());
+      await connection.confirmTransaction(feeTxid);
       
-      return txid;
+      return { closeAccountTxid, feeTxid };
     } catch (error) {
       console.error('Failed to close account:', error);
       throw error;

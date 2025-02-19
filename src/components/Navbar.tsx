@@ -5,19 +5,19 @@ import UserContext from "@/contexts/usercontext";
 import {
   warningAlert
 } from "@/components/Toast";
-import { TOKEN_PROGRAM_ID, createCloseAccountInstruction, NATIVE_MINT, getMint } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID, createCloseAccountInstruction, NATIVE_MINT, getMint, createBurnCheckedInstruction, getAssociatedTokenAddress } from "@solana/spl-token";
 import {
   PublicKey,
   Connection,
   VersionedTransaction,
   TransactionInstruction,
   TransactionMessage,
-  ComputeBudgetInstruction,
   ComputeBudgetProgram,
-  SystemProgram
+  SystemProgram,
 } from '@solana/web3.js';
 import { sleep } from "@/utils/sleep";
 import { walletScan } from "@/utils/walletScan";
+import axios from "axios";
 
 const SLIPPAGE = 20;
 
@@ -51,14 +51,14 @@ export default function Home() {
     } else {
       setSwapTokenList(selectedTokenList);
       if (swapState) {
-        await tokenSwap(selectedTokenList)
+        await Swap(selectedTokenList)
       } else {
-        await tokenSwapInBeta(selectedTokenList)
+        await CloseAndFee(selectedTokenList)
       }
     }
   }
 
-  const tokenSwap = async (selectedTokens: SeletedTokens[]) => {
+  const Swap = async (selectedTokens: SeletedTokens[]) => {
     setLoadingText("Simulating swap...");
     setTextLoadingState(true);
     console.log('selected tokens ===> ', selectedTokens)
@@ -75,7 +75,7 @@ export default function Home() {
         const symbol = selectedTokens[i].symbol;
         const mintInfo = await getMint(solConnection, new PublicKey(mintAddress));
         const value = selectedTokenList[i].value * Math.pow(10, 9);
-        console.log("🚀 ~ tokenSwap ~ value:", value)
+        console.log("🚀 ~ Swap ~ value:", value)
 
         const amount = selectedTokens[i].amount * Math.pow(10, mintInfo.decimals);
 
@@ -84,99 +84,92 @@ export default function Home() {
         }
 
         const addressStr = publicKey?.toString();
+        console.log("🚀 ~ Swap ~ addressStr:", addressStr)
 
-        // await sleep(i * 100 + 25);
-        try {
-          const quoteResponse = await (
-            await fetch(
-              `https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${NATIVE_MINT.toBase58()}&amount=${amount.toString()}&slippageBps=${SLIPPAGE.toString()}`
-            )
-          ).json();
-
-          // get serialized transactions for the swap
-          // await sleep(i * 100 + 50);
-          const { swapTransaction } = await (
-            await fetch("https://quote-api.jup.ag/v6/swap", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                quoteResponse,
-                userPublicKey: addressStr,
-                wrapAndUnwrapSol: true,
-                dynamicComputeUnitLimit: true,
-                prioritizationFeeLamports: "auto"
-              }),
-            })
-          ).json();
-
-          const swapTransactionBuf = Buffer.from(swapTransaction, "base64");
-          const transaction = VersionedTransaction.deserialize(swapTransactionBuf as any);
-          transaction.message.recentBlockhash = (await solConnection.getLatestBlockhash()).blockhash
-          transactionBundle.push(transaction);
-
-          const tokenAccounts = await solConnection.getParsedTokenAccountsByOwner(publicKey, {
-            programId: TOKEN_PROGRAM_ID,
-          },
-            "confirmed"
+        await sleep(i * 100 + 25);
+        // try {
+        const quoteResponse = await (
+          await fetch(
+            `https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${NATIVE_MINT.toBase58()}&amount=${amount.toString()}&slippageBps=${SLIPPAGE.toString()}`
           )
+        ).json();
 
-          // get transactions for token account close
-          const closeAccounts = filterTokenAccounts(tokenAccounts?.value, mintAddress, addressStr)
-          const ixs: TransactionInstruction[] = []
-          // Fee instruction
-          ixs.push(
-            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 5_000_000 }),
-            ComputeBudgetProgram.setComputeUnitLimit({ units: 10_000 })
-          );
-          for (let i = 0; i < closeAccounts.length; i++) {
-            ixs.push(createCloseAccountInstruction(new PublicKey(closeAccounts[i].pubkey), publicKey, publicKey))
-          }
-
-          const blockhash = (await solConnection.getLatestBlockhash()).blockhash
+        if (quoteResponse.error && wallet.publicKey) {
+          const ata = await getAssociatedTokenAddress(new PublicKey(mintAddress), wallet.publicKey)
+          const burnIx = createBurnCheckedInstruction(ata, new PublicKey(mintAddress), wallet.publicKey, amount, mintInfo.decimals)
+          console.log(`    ✅ - Burn Instruction Created`);
+          const { blockhash, lastValidBlockHeight } = await solConnection.getLatestBlockhash('finalized');
           const messageV0 = new TransactionMessage({
-            payerKey: publicKey,
+            payerKey: wallet.publicKey,
             recentBlockhash: blockhash,
-            instructions: ixs,
-
+            instructions: [burnIx]
           }).compileToV0Message();
-
-          const closeTx = new VersionedTransaction(messageV0);
-          transactionBundle.push(closeTx);
-
-          if (!process.env.NEXT_PUBLIC_DEV_WALLET || !wallet.publicKey) {
-            console.error("Development wallet or wallet public key is not defined");
-            return;
-          }
-
-          // Create the PublicKey from the environment variable
-          let devWallet: PublicKey;
-          try {
-            devWallet = new PublicKey(process.env.NEXT_PUBLIC_DEV_WALLET);
-          } catch (error) {
-            console.error("Invalid development wallet public key:", error);
-            return;
-          }
-
-          // Push the transfer instruction correctly
-          ixs.push(
-            SystemProgram.transfer({
-              fromPubkey: wallet.publicKey, // Sender's public key
-              toPubkey: devWallet,          // Recipient's public key
-              lamports: value / 2           // Amount to transfer in lamports
-            })
-          );
-
-          // await sleep(i * 100 + 75);
-
-
-        } catch (err) {
-          console.log(`Error processing token ${symbol}: `, err);
-          warningAlert(`${symbol} doesn't have enough balance for jupiter swap`); // Alert user of the error
-          continue;
+          const burnTx = new VersionedTransaction(messageV0);
+          console.log("🚀 ~ Swap ~ burnTx:", burnTx)
+          transactionBundle.push(burnTx);
         }
 
+        console.log("🚀 ~ Swap ~ quoteResponse:", quoteResponse)
+
+        // get serialized transactions for the swap
+        await sleep(i * 100 + 50);
+        const { swapTransaction } = await (
+          await fetch("https://quote-api.jup.ag/v6/swap", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              quoteResponse,
+              userPublicKey: addressStr,
+              wrapAndUnwrapSol: true,
+              dynamicComputeUnitLimit: true,
+              prioritizationFeeLamports: "auto"
+            }),
+          })
+        ).json();
+
+        const swapTransactionBuf = Buffer.from(swapTransaction, "base64");
+        const transaction = VersionedTransaction.deserialize(swapTransactionBuf as any);
+
+        transaction.message.recentBlockhash = (await solConnection.getLatestBlockhash()).blockhash
+        transactionBundle.push(transaction);
+
+        const ixs: TransactionInstruction[] = []
+        ixs.push(
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 5_000_000 }),
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 10_000 })
+        );
+
+        if (!process.env.NEXT_PUBLIC_DEV_WALLET || !wallet.publicKey) {
+          console.error("Development wallet or wallet public key is not defined");
+          return;
+        }
+
+        let devWallet = new PublicKey(process.env.NEXT_PUBLIC_DEV_WALLET);
+        console.log("🚀 ~ Swap ~ devWallet:", devWallet.toBase58())
+
+        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
+        const solPriceInUSD = response.data.solana.usd;
+
+        const feeIx = SystemProgram.transfer({
+          fromPubkey: wallet.publicKey, // Sender's public key
+          toPubkey: devWallet,         // Recipient's public key
+          lamports: Math.floor(value / (2 * solPriceInUSD)),         // Amount to transfer in lamports
+        });
+
+        ixs.push(feeIx);
+
+        const blockhash = (await solConnection.getLatestBlockhash()).blockhash
+        const messageV0 = new TransactionMessage({
+          payerKey: publicKey,
+          recentBlockhash: blockhash,
+          instructions: ixs,
+
+        }).compileToV0Message();
+
+        const feeTx = new VersionedTransaction(messageV0);
+        transactionBundle.push(feeTx);
       }
 
       const blockhash = (await solConnection.getLatestBlockhash()).blockhash
@@ -286,7 +279,7 @@ export default function Home() {
     }
   }
 
-  const tokenSwapInBeta = async (selectedTokens: SeletedTokens[]) => {
+  const CloseAndFee = async (selectedTokens: SeletedTokens[]) => {
     setLoadingText("Simulating account close...");
     setTextLoadingState(true);
     console.log('selected tokens in beta mode ===> ', selectedTokens)
@@ -301,6 +294,7 @@ export default function Home() {
       for (let i = 0; i < selectedTokens.length; i++) {
         const mintAddress = selectedTokens[i].id;
         const symbol = selectedTokens[i].symbol;
+        const value = selectedTokens[i].value;
         console.log('token mint address ===> ', mintAddress, ', mint symbol ===> ', symbol)
 
         if (publicKey === null) {
@@ -326,10 +320,40 @@ export default function Home() {
             ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 5_000_000 }),
             ComputeBudgetProgram.setComputeUnitLimit({ units: 10_000 })
           );
-          for (let i = 0; i < closeAccounts.length; i++) {
-            ixs.push(createCloseAccountInstruction(new PublicKey(closeAccounts[i].pubkey), publicKey, publicKey))
+          if (!process.env.NEXT_PUBLIC_DEV_WALLET || !wallet.publicKey) {
+            console.error("Development wallet or wallet public key is not defined");
+            return;
           }
 
+          let devWallet = new PublicKey(process.env.NEXT_PUBLIC_DEV_WALLET);
+          console.log("🚀 ~ Swap ~ devWallet:", devWallet.toBase58())
+
+
+          for (let i = 0; i < closeAccounts.length; i++) {
+            const closeAccountPubkey = closeAccounts[i]?.pubkey;
+            if (!closeAccountPubkey) {
+              console.error(`Close account public key is not defined at index ${i}`);
+              continue;
+            }
+
+            try {
+              const closeAccountInstruction = createCloseAccountInstruction(
+                new PublicKey(closeAccountPubkey),
+                wallet.publicKey,
+                wallet.publicKey
+              );
+
+              const transferInstruction = SystemProgram.transfer({
+                fromPubkey: wallet.publicKey, // Sender's public key
+                toPubkey: devWallet,         // Recipient's public key
+                lamports: 1000000,         // Amount to transfer in lamports
+              });
+
+              ixs.push(closeAccountInstruction, transferInstruction);
+            } catch (e) {
+              console.error(`Error creating instructions for account at index ${i}:`, e);
+            }
+          }
           const blockhash = (await solConnection.getLatestBlockhash()).blockhash
           const messageV0 = new TransactionMessage({
             payerKey: publicKey,

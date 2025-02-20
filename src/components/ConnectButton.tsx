@@ -1,5 +1,4 @@
 "use client";
-import axios from "axios";
 import { FC, useContext, useEffect } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
@@ -11,11 +10,11 @@ import {
 } from "@/components/Toast";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { getMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { MetadataAccountData, MetadataAccountDataArgs, getMetadataAccountDataSerializer } from '@metaplex-foundation/mpl-token-metadata';
+import { getMetadataAccountDataSerializer } from '@metaplex-foundation/mpl-token-metadata';
 import { getPdaMetadataKey } from "@raydium-io/raydium-sdk";
 
 const ConnectButton: FC = () => {
-  const { tokenList, setTokenList, setLoadingState, currentAmount, setTokenFilterList, setTokeBalance, swapState } = useContext<any>(UserContext);
+  const { setTokenList, setLoadingState, setTokeBalance, swapState } = useContext<any>(UserContext);
   const { setVisible } = useWalletModal();
   const { publicKey, disconnect } = useWallet();
 
@@ -26,15 +25,8 @@ const ConnectButton: FC = () => {
       } else {
         getTokenListInBeta(publicKey.toBase58());
       }
-      getWalletTokeBalance();
     }
   }, [publicKey, swapState])
-
-  useEffect(() => {
-    if (tokenList !== undefined) {
-      // filterData()
-    }
-  }, [tokenList, currentAmount])
 
   const getTokenInfo = async (address: string) => {
     const solanaConnection = new Connection(String(process.env.NEXT_PUBLIC_SOLANA_RPC));
@@ -64,7 +56,12 @@ const ConnectButton: FC = () => {
           }
           const serializer = getMetadataAccountDataSerializer()
           const deserialize = serializer.deserialize(metadataAccount.data as any);
+          console.log("🚀 ~ tokenAccounts.value.map ~ deserialize:", deserialize)
           const mintInfo = await getMint(solanaConnection, mintPublicKey);
+          console.log("🚀 ~ tokenAccounts.value.map ~ mintInfo:", mintInfo)
+          if(mintInfo.decimals == 0) {
+            return null;
+          }
 
           // Extract name and symbol from metadata
           const name = deserialize[0]?.name;
@@ -122,15 +119,6 @@ const ConnectButton: FC = () => {
       errorAlert(err)
     }
     setLoadingState(false)
-  }
-
-  const getWalletTokeBalance = async () => {
-    if (publicKey === null) {
-      return;
-    }
-    const tokeAmount = await walletScan(publicKey?.toString());
-    console.log('toke amount ===> ', tokeAmount)
-    setTokeBalance(tokeAmount);
   }
 
   return (

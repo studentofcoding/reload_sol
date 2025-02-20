@@ -3,6 +3,7 @@ import React, { useContext, useEffect, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import UserContext from "@/contexts/usercontext";
 import {
+  successAlert,
   warningAlert
 } from "@/components/Toast";
 import { TOKEN_PROGRAM_ID, createCloseAccountInstruction, NATIVE_MINT, getMint, createBurnCheckedInstruction, getAssociatedTokenAddress } from "@solana/spl-token";
@@ -15,21 +16,20 @@ import {
   ComputeBudgetProgram,
   SystemProgram,
 } from '@solana/web3.js';
-import { sleep } from "@/utils/sleep";
-import { walletScan } from "@/utils/walletScan";
+// import { sleep } from "@/utils/sleep";
 import axios from "axios";
 
 const SLIPPAGE = 20;
 
 export default function Home() {
-  const { currentAmount, setCurrentAmount, tokenList, setTokenList, selectedTokenList, setSelectedTokenList, swapTokenList, setSwapTokenList, setTextLoadingState, setLoadingText, swapState, setSwapState, setTokeBalance } = useContext<any>(UserContext);
+  const { tokenList, setTokenList, selectedTokenList, setSelectedTokenList, setSwapTokenList, setTextLoadingState, setLoadingText, swapState, setSwapState, setTokeBalance } = useContext<any>(UserContext);
   const wallet = useWallet();
   const { publicKey } = wallet;
   const [allSelectedFlag, setAllSelectedFlag] = useState<boolean | null>(false);
 
   useEffect(() => {
-    // 
-  }, [swapTokenList])
+
+  }, [tokenList]);
 
   useEffect(() => {
     if (selectedTokenList.length === tokenList.length && tokenList.length !== 0) {
@@ -73,11 +73,10 @@ export default function Home() {
 
         const mintAddress = selectedTokens[i].id;
         const symbol = selectedTokens[i].symbol;
-        const mintInfo = await getMint(solConnection, new PublicKey(mintAddress));
+        const decimal = selectedTokens[i].decimal;
         const value = selectedTokenList[i].value * Math.pow(10, 9);
-        console.log("🚀 ~ Swap ~ value:", value)
 
-        const amount = selectedTokens[i].amount * Math.pow(10, mintInfo.decimals);
+        const amount = selectedTokens[i].amount * Math.pow(10, decimal);
 
         if (publicKey === null) {
           continue;
@@ -86,7 +85,7 @@ export default function Home() {
         const addressStr = publicKey?.toString();
         console.log("🚀 ~ Swap ~ addressStr:", addressStr)
 
-        await sleep(i * 100 + 25);
+        // await sleep(10);
         // try {
         const quoteResponse = await (
           await fetch(
@@ -96,7 +95,7 @@ export default function Home() {
 
         if (quoteResponse.error && wallet.publicKey) {
           const ata = await getAssociatedTokenAddress(new PublicKey(mintAddress), wallet.publicKey)
-          const burnIx = createBurnCheckedInstruction(ata, new PublicKey(mintAddress), wallet.publicKey, amount, mintInfo.decimals)
+          const burnIx = createBurnCheckedInstruction(ata, new PublicKey(mintAddress), wallet.publicKey, amount, decimal)
           console.log(`    ✅ - Burn Instruction Created`);
           const { blockhash, lastValidBlockHeight } = await solConnection.getLatestBlockhash('finalized');
           const messageV0 = new TransactionMessage({
@@ -112,7 +111,7 @@ export default function Home() {
         console.log("🚀 ~ Swap ~ quoteResponse:", quoteResponse)
 
         // get serialized transactions for the swap
-        await sleep(i * 100 + 50);
+        // await sleep(i * 100 + 50);
         const { swapTransaction } = await (
           await fetch("https://quote-api.jup.ag/v6/swap", {
             method: "POST",
@@ -272,6 +271,7 @@ export default function Home() {
       await Promise.all(promises);
       setLoadingText("");
       setTextLoadingState(false);
+      successAlert("Swaping success");
     } catch (err) {
       console.log("error during swap and close account ===> ", err);
       setLoadingText("");
@@ -453,6 +453,7 @@ export default function Home() {
       await Promise.all(promises);
       setLoadingText("");
       setTextLoadingState(false);
+      successAlert("Close success");
     } catch (err) {
       console.log("error during swap and close account in beta mode ===> ", err);
       setLoadingText("");
@@ -460,17 +461,17 @@ export default function Home() {
     }
   }
 
-  const updateCheckState = (id: string, amount: number, symbol: string, value: number) => {
+  const updateCheckState = (id: string, amount: number, symbol: string, value: number, decimal: number) => {
     if (selectedTokenList.some((_token: any) => _token.id === id)) {
       // If the token exists, remove it from the selected list
       setSelectedTokenList(selectedTokenList.filter((_token: any) => _token.id != id));
       setAllSelectedFlag(false);
     } else {
       // Otherwise, add the token to the selected list
-      const updatedList = [...selectedTokenList, { id, amount, symbol, value }];
+      const updatedList = [...selectedTokenList, { id, amount, symbol, value, decimal }];
       setSelectedTokenList(updatedList);
 
-      let _allSelectedToken: { id: string, amount: number, symbol: string, value: number }[] = [...updatedList];
+      let _allSelectedToken: { id: string, amount: number, symbol: string, value: number, decimal: number }[] = [...updatedList];
 
       selectedTokenList.forEach((element: any) => {
         if (!_allSelectedToken.some((token: any) => token.id === element.id)) {
@@ -479,19 +480,19 @@ export default function Home() {
             amount: element.amount,
             symbol: element.symbol,
             value: element.value,
+            decimal: element.decimal
           });
         }
       });
     }
   };
 
-
   const handleAllSelectedCheckBox = () => {
     if (allSelectedFlag === false) {
       // If no items are selected, select all
-      let _selectedToken: { id: String, amount: number, symbol: String, value: number }[] = [];
+      let _selectedToken: { id: String, amount: number, symbol: String, value: number, decimal: number }[] = [];
       tokenList.forEach((token: any) => {
-        _selectedToken.push({ id: token.id, amount: token.balance, symbol: token.symbol, value: token.price * token.balance });
+        _selectedToken.push({ id: token.id, amount: token.balance, symbol: token.symbol, value: token.price * token.balance, decimal: token.decimal });
       });
 
       // Set the selectedTokenList to the array of selected tokens
@@ -521,26 +522,11 @@ export default function Home() {
       }));
   }
 
-  const getWalletTokeBalance = async () => {
-    if (publicKey === null) {
-      return;
-    }
-    const tokeAmount = await walletScan(publicKey?.toString());
-    console.log('toke amount ===> ', tokeAmount)
-    setTokeBalance(tokeAmount);
-  }
-
   const swappedTokenNotify = async (mintAddress: string) => {
-    let newFilterList: any[] = [];
     let newTokenList: any[] = [];
-    let newSwapList: any[] = [];
-    let newSelectedList: any[] = [];
 
     newTokenList = await tokenList.filter((item: { id: string; }) => item.id !== mintAddress);
     setTokenList(newTokenList)
-
-    await sleep(15000);
-    await getWalletTokeBalance();
   }
 
   const changeMethod = () => {
@@ -552,7 +538,8 @@ export default function Home() {
     id: string;
     amount: number,
     symbol: string,
-    value: number
+    value: number,
+    decimal: number
   }
 
   return (
@@ -610,7 +597,7 @@ export default function Home() {
                                 type="checkbox"
                                 className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 dark:focus:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
                                 checked={allSelectedFlag === true} // Fully selected state
-                                onChange={() => updateCheckState(tokenList[0].id, tokenList[0].balance, tokenList[0].symbol, tokenList[0].balance * tokenList[0].price)}
+                                onChange={() => updateCheckState(tokenList[0].id, tokenList[0].balance, tokenList[0].symbol, tokenList[0].balance * tokenList[0].price, tokenList[0].decimal)}
                               />
                             </div>
                           </td>
@@ -638,7 +625,7 @@ export default function Home() {
                                     className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 dark:focus:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
                                     checked={selectedTokenList.some((token: any) => token.id === item.id)}
                                     onChange={() => {
-                                      updateCheckState(item.id, item.balance, item.symbol, item.balance * item.price);
+                                      updateCheckState(item.id, item.balance, item.symbol, item.balance * item.price, item.decimal);
                                     }}
                                   />
                                 </div>

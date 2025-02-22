@@ -30,6 +30,27 @@ const RPC_ENDPOINTS = [
   process.env.NEXT_PUBLIC_SOLANA_RPC_HELIUS
 ].filter(Boolean) as string[]; // Filter out any undefined values
 
+interface SignatureResult {
+  sig: string;
+  tx: VersionedTransaction;
+}
+
+interface JitoBundleResult {
+  success: boolean;
+  failedTransactions: VersionedTransaction[];
+}
+
+// Add Jito constants at the top
+const JITO_TIP_ACCOUNT = "JitoNbRYYRPQRt1kGCykKhytNgqf1KGmFjVHkCzGxWn"; // Jito's fee account
+const JITO_TIP_LAMPORTS = 100000; // 0.0001 SOL per tx
+
+// Add to interfaces at the top
+interface BundleResults {
+  successfulTokens: string[];
+  failedTokens: string[];
+  failedTransactions: VersionedTransaction[];
+}
+
 async function getWorkingConnection() {
   for (const endpoint of RPC_ENDPOINTS) {
     try {
@@ -104,238 +125,338 @@ export default function Home() {
     throw new Error("Failed to get blockhash after retries");
   };
 
+  // Modify sendJitoBundles function to include Jito tip
+  async function sendJitoBundles(txs: VersionedTransaction[], tokens: SeletedTokens[]): Promise<BundleResults> {
+    const signAllTransactions = wallet?.signAllTransactions;
+    if (!signAllTransactions || !wallet?.publicKey || !solConnection) {
+      throw new Error("Wallet not ready for signing");
+    }
+
+    const failedTransactions: VersionedTransaction[] = [];
+    const successfulTokens: string[] = [];
+    const failedTokens: string[] = [];
+    const promises = [];
+
+    for (let j = 0; j < txs.length; j += 5) {
+      const bundleSize = Math.min(5, txs.length - j);
+      const bundleTxs = txs.slice(j, j + bundleSize);
+      
+      const bundlePromise = (async () => {
+        try {
+          const { blockhash, lastValidBlockHeight } = await solConnection.getLatestBlockhash('confirmed');
+          
+          // Create new transactions with fresh blockhash
+          const updatedTxs = bundleTxs.map(tx => {
+            // Keep original transaction data but update blockhash
+            const newTx = new VersionedTransaction(tx.message);
+            newTx.message.recentBlockhash = blockhash;
+            return newTx;
+          });
+
+          console.log("Signing bundle with blockhash:", blockhash);
+          const signedBundle = await signAllTransactions(updatedTxs);
+
+          // Process signed transactions
+          const signatures: SignatureResult[] = [];
+          await Promise.all(signedBundle.map(async (tx, idx) => {
+            try {
+              const sig = await solConnection.sendRawTransaction(tx.serialize(), {
+                skipPreflight: true,
+                maxRetries: 3,
+              });
+              
+              signatures.push({ sig, tx });
+              tokens[j + idx]?.id && successfulTokens.push(tokens[j + idx].id);
+            } catch (error) {
+              console.error(`Transaction ${idx} failed:`, error);
+              failedTransactions.push(tx);
+              tokens[j + idx]?.id && failedTokens.push(tokens[j + idx].id);
+            }
+          }));
+
+          // Confirm transactions
+          if (signatures.length > 0) {
+            await Promise.all(
+              signatures.map(({ sig }) => 
+                solConnection.confirmTransaction({
+                  signature: sig,
+                  lastValidBlockHeight,
+                  blockhash
+                })
+              )
+            );
+          }
+
+          return signatures.length === bundleSize;
+        } catch (error) {
+          console.error(`Bundle failed:`, error);
+          bundleTxs.forEach((tx, idx) => {
+            failedTransactions.push(tx);
+            tokens[j + idx]?.id && failedTokens.push(tokens[j + idx].id);
+          });
+          return false;
+        }
+      })();
+      
+      promises.push(bundlePromise);
+    }
+
+    await Promise.all(promises);
+    return { successfulTokens, failedTokens, failedTransactions };
+  }
+
+  const sendTransactions = async (signedTxs: VersionedTransaction[], selectedTokens: SeletedTokens[]) => {
+    if (!solConnection) throw new Error("No connection available");
+    
+    // Performance tracking
+    const startTime = performance.now();
+    const metrics = {
+      bundleAttempts: 0,
+      retryAttempts: 0,
+      successfulTxs: 0,
+      failedTxs: 0,
+      totalTime: 0
+    };
+
+    // Use Jito bundling for larger selections
+    if (selectedTokens.length > 3) {
+      console.log("Using Jito bundling for large transaction set");
+      
+      try {
+        // First attempt: Jito bundling
+        metrics.bundleAttempts++;
+        const jitoResult = await sendJitoBundles(signedTxs, selectedTokens);
+        
+        if (jitoResult.successfulTokens.length > 0) {
+          metrics.successfulTxs = signedTxs.length;
+          metrics.totalTime = performance.now() - startTime;
+          console.log("Jito bundle performance:", {
+            ...metrics,
+            averageTimePerTx: metrics.totalTime / signedTxs.length,
+            bundleSuccess: true
+          });
+          return true;
+        }
+
+        // Fallback to regular transactions with remaining txs
+        console.log("Jito bundle failed, falling back to regular transactions");
+        metrics.failedTxs = jitoResult.failedTokens.length;
+        
+        return await sendRegularTransactions(jitoResult.failedTransactions, selectedTokens);
+      } catch (error) {
+        console.error("Error in Jito bundling:", error);
+        return await sendRegularTransactions(signedTxs, selectedTokens);
+      }
+    } else {
+      return await sendRegularTransactions(signedTxs, selectedTokens);
+    }
+
+    async function sendRegularTransactions(txs: VersionedTransaction[], tokens: SeletedTokens[]) {
+      console.log("Falling back to regular transaction processing");
+      const startRetryTime = performance.now();
+
+      if (!solConnection) {
+        console.error("No connection available");
+        warningAlert("Connection not available. Please try again.");
+        return;
+      }
+      
+      const promises = [];
+      for (let j = 0; j < txs.length; j++) {
+        const txPromise = (async () => {
+          const tx = txs[j];
+          let attempts = 0;
+          const maxAttempts = 3;
+
+          while (attempts < maxAttempts) {
+            try {
+              metrics.retryAttempts++;
+              const sig = await solConnection.sendRawTransaction(tx.serialize(), {
+                skipPreflight: true,
+                maxRetries: 2,
+              });
+              await solConnection.confirmTransaction(sig);
+              metrics.successfulTxs++;
+              return true;
+            } catch (error) {
+              attempts++;
+              if (attempts === maxAttempts) {
+                metrics.failedTxs++;
+                console.error(`Transaction failed after ${maxAttempts} attempts:`, error);
+                return false;
+              }
+              await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+            }
+          }
+        })();
+        promises.push(txPromise);
+      }
+
+      const results = await Promise.all(promises);
+      metrics.totalTime = performance.now() - startTime;
+      
+      console.log("Regular transaction performance:", {
+        ...metrics,
+        fallbackTime: performance.now() - startRetryTime,
+        successRate: `${(metrics.successfulTxs / txs.length * 100).toFixed(2)}%`
+      });
+
+      return results.every(result => result);
+    }
+  };
+
   const Swap = async (selectedTokens: SeletedTokens[]) => {
-    if (!solConnection) {
-      console.error("No connection available");
-      warningAlert("Connection not available. Please try again.");
+    if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
+      console.error("Connection, wallet, or signing not available");
+      warningAlert("Please check your wallet connection");
       return;
     }
 
-    setLoadingText("Simulating swap...");
+    setLoadingText("Preparing transactions...");
     setTextLoadingState(true);
-    console.log('selected tokens ===> ', selectedTokens)
+
+    // Track token statuses
+    const tokenStatuses = new Map(
+      selectedTokens.map(token => [token.id, { swapComplete: false, closeComplete: false }])
+    );
 
     try {
-      if (!wallet || !wallet.publicKey) {
-        console.error("Wallet not connected");
-        return;
-      }
-
-      let transactionBundle: VersionedTransaction[] = [];
+      // Step 1: Prepare all swap transactions first
+      const swapBundle: VersionedTransaction[] = [];
       const rateLimiter = new RateLimiter(2);
 
-      // Transaction construct
-      for (let i = 0; i < selectedTokens.length; i++) {
-        const mintAddress = selectedTokens[i].id;
-        const symbol = selectedTokens[i].symbol;
-        const mintInfo = await getMint(solConnection, new PublicKey(mintAddress));
-        
-        const amount = selectedTokens[i].amount;
-        const value = selectedTokenList[i].value * Math.pow(10, 9);
-
-        const addressStr = wallet.publicKey.toBase58();
-
+      // Collect all swap transactions
+      for (const token of selectedTokens) {
         try {
-          console.log(`[${new Date().toISOString()}] Requesting quote for token ${mintAddress}`);
-          
-          // Get quote first
+          console.log(`Preparing swap for ${token.id}`);
           const quoteResponse = await rateLimiter.schedule(async () => {
             const response = await fetch(
               `https://swap-v2.solanatracker.io/rate?` + new URLSearchParams({
-                from: mintAddress,
+                from: token.id,
                 to: NATIVE_MINT.toBase58(),
-                amount: amount.toString(),
+                amount: token.amount.toString(),
                 slippage: SLIPPAGE.toString()
               })
             );
 
-            if (!response.ok) {
-              throw new Error(`Quote failed: ${response.statusText}`);
-            }
-
+            if (!response.ok) throw new Error(`Quote failed: ${response.statusText}`);
             return await response.json();
           });
 
-          console.log(`[${new Date().toISOString()}] Quote received:`, quoteResponse);
-
-          // If quote looks good, request swap transaction
           const swapResponse = await rateLimiter.schedule(async () => {
             const response = await fetch("https://swap-v2.solanatracker.io/swap", {
               method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
+              headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                from: mintAddress,
+                from: token.id,
                 to: NATIVE_MINT.toBase58(),
-                amount: amount,
+                amount: token.amount,
                 slippage: SLIPPAGE,
-                payer: addressStr,
+                payer: wallet.publicKey?.toBase58(),
                 priorityFee: 0.0005,
                 feeType: "add",
                 fee: "3V3N5xh6vUUVU3CnbjMAXoyXendfXzXYKzTVEsFrLkgX:0.1"
-              }),
+              })
             });
 
-            if (!response.ok) {
-              throw new Error(`Swap request failed: ${response.statusText}`);
-            }
-
+            if (!response.ok) throw new Error(`Swap request failed: ${response.statusText}`);
             return await response.json();
           });
 
-          console.log(`[${new Date().toISOString()}] Swap transaction received:`, swapResponse);
-
-          // Convert transaction to VersionedTransaction
           if (swapResponse.txn) {
-            const transaction = VersionedTransaction.deserialize(
-              Buffer.from(swapResponse.txn, 'base64')
-            );
-            console.log('transaction ===> ', transaction)
-
-            // Sign and send transaction
-            if (transaction.version === 'legacy') {
-              if (!wallet.signTransaction) {
-                console.error("Wallet does not support signing transactions");
-                return;
-              }
-
-              try {
-                const signedTx = await wallet.signTransaction(transaction);
-                const txid = await solConnection.sendTransaction(signedTx, {
-                  skipPreflight: true,
-                  maxRetries: 4,
-                });
-
-                console.log("Transaction ID:", txid);
-                console.log("Transaction URL:", `https://solscan.io/tx/${txid}`);
-                await solConnection.confirmTransaction(txid);
-                swappedTokenNotify(mintAddress);
-              } catch (signError) {
-                console.error("Error signing/sending transaction:", signError);
-                throw signError; // This will trigger the burn fallback
-              }
-            }
+            const tx = VersionedTransaction.deserialize(Buffer.from(swapResponse.txn, 'base64'));
+            swapBundle.push(tx);
           }
-
         } catch (error) {
-          console.error("Swap creation failed, falling back to burn:", error);
-          
-          // Fallback to burn if swap fails
-          const ata = await getAssociatedTokenAddress(new PublicKey(mintAddress), wallet.publicKey);
-          const burnIx = createBurnCheckedInstruction(
-            ata, 
-            new PublicKey(mintAddress), 
-            wallet.publicKey, 
-            amount * Math.pow(10, mintInfo.decimals), 
-            mintInfo.decimals
-          );
-          
-          const blockhash = await getBlockhash();
-          const messageV0 = new TransactionMessage({
-            payerKey: wallet.publicKey,
-            recentBlockhash: blockhash,
-            instructions: [burnIx]
-          }).compileToV0Message();
-          
-          const burnTx = new VersionedTransaction(messageV0);
-          transactionBundle.push(burnTx);
+          console.error(`Failed to prepare swap for ${token.id}:`, error);
+          tokenStatuses.get(token.id)!.swapComplete = false;
         }
+      }
 
-        // Add fee transaction
-        const ixs: TransactionInstruction[] = [];
-        ixs.push(
-          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 5_000_000 }),
-          ComputeBudgetProgram.setComputeUnitLimit({ units: 10_000 })
+      // Step 2: Execute swap bundle
+      if (swapBundle.length > 0) {
+        setLoadingText("Signing swap transactions...");
+        const signedSwapBundle = await wallet.signAllTransactions(swapBundle);
+        
+        setLoadingText("Processing swaps...");
+        const swapResults: BundleResults = await sendJitoBundles(signedSwapBundle, selectedTokens);
+        
+        swapResults.successfulTokens.forEach(tokenId => {
+          tokenStatuses.get(tokenId)!.swapComplete = true;
+        });
+      }
+
+      // Step 3: Prepare close transactions for successful swaps
+      const closeBundle: VersionedTransaction[] = [];
+      for (const [tokenId, status] of Array.from(tokenStatuses.entries())) {
+        if (status.swapComplete) {
+          try {
+            const token = selectedTokens.find(t => t.id === tokenId)!;
+            const ata = await getAssociatedTokenAddress(
+              new PublicKey(tokenId),
+              wallet.publicKey
+            );
+
+            const closeIx = createCloseAccountInstruction(
+              ata,
+              wallet.publicKey,
+              wallet.publicKey
+            );
+
+            const messageV0 = new TransactionMessage({
+              payerKey: wallet.publicKey,
+              recentBlockhash: await getBlockhash(),
+              instructions: [closeIx]
+            }).compileToV0Message();
+
+            closeBundle.push(new VersionedTransaction(messageV0));
+          } catch (error) {
+            console.error(`Failed to prepare close for ${tokenId}:`, error);
+          }
+        }
+      }
+
+      // Step 4: Execute close bundle
+      if (closeBundle.length > 0) {
+        setLoadingText("Signing close transactions...");
+        const signedCloseBundle = await wallet.signAllTransactions(closeBundle);
+        
+        setLoadingText("Processing closes...");
+        const closeResults: BundleResults = await sendJitoBundles(signedCloseBundle, 
+          selectedTokens.filter(token => tokenStatuses.get(token.id)?.swapComplete)
         );
 
-        if (!process.env.NEXT_PUBLIC_DEV_WALLET) {
-          console.error("Development wallet is not defined");
-          return;
-        }
-
-        let devWallet = new PublicKey(process.env.NEXT_PUBLIC_DEV_WALLET);
-        console.log("🚀 ~ Swap and transfer fee ~ devWallet:", devWallet.toBase58())
-
-        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
-        const solPriceInUSD = response.data.solana.usd;
-
-        const feeIx = SystemProgram.transfer({
-          fromPubkey: wallet.publicKey,
-          toPubkey: devWallet,
-          lamports: Math.floor(value / (2 * solPriceInUSD)),
+        closeResults.successfulTokens.forEach(tokenId => {
+          tokenStatuses.get(tokenId)!.closeComplete = true;
         });
-
-        ixs.push(feeIx);
-
-        const blockhash = await getBlockhash();
-        const messageV0 = new TransactionMessage({
-          payerKey: wallet.publicKey,
-          recentBlockhash: blockhash,
-          instructions: ixs,
-        }).compileToV0Message();
-
-        const feeTx = new VersionedTransaction(messageV0);
-        transactionBundle.push(feeTx);
       }
 
-      // Handle burn and fee transactions if any
-      if (transactionBundle.length > 0) {
-        const blockhash = await getBlockhash();
-        transactionBundle.map((tx) => tx.message.recentBlockhash = blockhash);
-
-        if (!wallet.signAllTransactions) {
-          console.log('Wallet does not support signing transactions');
-          return;
+      // Final status report
+      const summary = Array.from(tokenStatuses.entries()).reduce((acc, [tokenId, status]) => {
+        const token = selectedTokens.find(t => t.id === tokenId)!;
+        if (status.swapComplete && status.closeComplete) {
+          acc.success.push(token.symbol);
+        } else {
+          acc.failed.push(token.symbol);
         }
+        return acc;
+      }, { success: [] as string[], failed: [] as string[] });
 
-        const signedTxs = await wallet.signAllTransactions(transactionBundle);
-        setLoadingText("Swapping now...");
-        setTextLoadingState(true);
-
-        // Transaction confirmation
-        const promises = []; // Array to hold promises for each batch
-        for (let j = 0; j < signedTxs.length; j += 3) {
-          // Create a new promise for each outer loop iteration
-          const batchPromise = (async () => {
-            let success = true; // Assume success initially
-            for (let k = j; k < j + 3 && k < signedTxs.length; k++) {
-              try {
-                const tx = signedTxs[k]; // Get transaction
-                const latestBlockhash = await solConnection.getLatestBlockhash(); // Fetch the latest blockhash
-
-                console.log(await solConnection.simulateTransaction(tx, { sigVerify: true }));
-
-                // Send the transaction
-                const sig = await solConnection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-                await solConnection.confirmTransaction(sig);
-              } catch (error) {
-                console.error(`Error in transaction ${k}:`, error);
-                success = false;
-              }
-            }
-            return success;
-          })();
-          promises.push(batchPromise);
-        }
-
-        // Wait for all batches to complete
-        await Promise.all(promises);
+      if (summary.success.length > 0) {
+        warningAlert(`Successfully processed: ${summary.success.join(', ')}`);
       }
+      if (summary.failed.length > 0) {
+        warningAlert(`Failed to process: ${summary.failed.join(', ')}`);
+      }
+
     } catch (err) {
-      console.log("error during swap and close account ===> ", err);
-      if (err instanceof Error) {
-        console.error("Error details:", {
-          message: err.message,
-          stack: err.stack,
-          name: err.name
-        });
-      }
+      console.error("Error during swap process:", err);
+      warningAlert("Some operations failed. Please check the console for details.");
+    } finally {
       setLoadingText("");
       setTextLoadingState(false);
-      warningAlert("Transaction failed. Please try again.");
     }
-  }
+  };
 
   const CloseAndFee = async (selectedTokens: SeletedTokens[]) => {
     setLoadingText("Simulating account close...");
@@ -492,6 +613,13 @@ export default function Home() {
                     break;
                 }
               }
+
+              // Add logging for transaction result
+              console.log("Transaction result:", {
+                signature: sig,
+                slot: await solConnection.getSlot(),
+                timestamp: new Date().toISOString()
+              });
             } catch (error) {
               console.error(`Error occurred during ${k}th transaction processing in beta mode: `, error);
               success = false; // Mark success as false

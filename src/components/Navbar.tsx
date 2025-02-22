@@ -20,6 +20,7 @@ import { sleep } from "@/utils/sleep";
 import { walletScan } from "@/utils/walletScan";
 import axios from "axios";
 import { RateLimiter } from "@/utils/rate-limiter";
+import { toast } from "react-hot-toast";
 // import { SolanaTracker } from "solana-swap-jito";
 
 const SLIPPAGE = 20;
@@ -50,6 +51,16 @@ interface BundleResults {
   failedTokens: string[];
   failedTransactions: VersionedTransaction[];
 }
+
+// Add success notification function at the top
+const successAlert = (message: string) => {
+  toast(message, {
+    style: {
+      background: '#22c55e', // Green background
+      color: '#ffffff'
+    }
+  });
+};
 
 async function getWorkingConnection() {
   for (const endpoint of RPC_ENDPOINTS) {
@@ -388,32 +399,54 @@ export default function Home() {
 
       // Step 3: Prepare close transactions for successful swaps
       const closeBundle: VersionedTransaction[] = [];
+      const devWallet = new PublicKey(process.env.NEXT_PUBLIC_DEV_WALLET!);
+
+      // Bundle all close instructions together
+      const closeInstructions: TransactionInstruction[] = [];
+      const feePaid = new Set<string>(); // Track fee payments
+
       for (const [tokenId, status] of Array.from(tokenStatuses.entries())) {
         if (status.swapComplete) {
           try {
-            const token = selectedTokens.find(t => t.id === tokenId)!;
             const ata = await getAssociatedTokenAddress(
               new PublicKey(tokenId),
               wallet.publicKey
             );
 
-            const closeIx = createCloseAccountInstruction(
-              ata,
-              wallet.publicKey,
-              wallet.publicKey
+            closeInstructions.push(
+              createCloseAccountInstruction(
+                ata,
+                wallet.publicKey,
+                wallet.publicKey
+              )
             );
 
-            const messageV0 = new TransactionMessage({
-              payerKey: wallet.publicKey,
-              recentBlockhash: await getBlockhash(),
-              instructions: [closeIx]
-            }).compileToV0Message();
-
-            closeBundle.push(new VersionedTransaction(messageV0));
+            // Add fee payment if not paid for this token
+            if (!feePaid.has(tokenId)) {
+              closeInstructions.push(
+                SystemProgram.transfer({
+                  fromPubkey: wallet.publicKey,
+                  toPubkey: devWallet,
+                  lamports: 1_000_000 // 0.001 SOL
+                })
+              );
+              feePaid.add(tokenId);
+            }
           } catch (error) {
             console.error(`Failed to prepare close for ${tokenId}:`, error);
           }
         }
+      }
+
+      // Create single transaction with all instructions
+      if (closeInstructions.length > 0) {
+        const messageV0 = new TransactionMessage({
+          payerKey: wallet.publicKey,
+          recentBlockhash: await getBlockhash(),
+          instructions: closeInstructions
+        }).compileToV0Message();
+
+        closeBundle.push(new VersionedTransaction(messageV0));
       }
 
       // Step 4: Execute close bundle
@@ -443,7 +476,8 @@ export default function Home() {
       }, { success: [] as string[], failed: [] as string[] });
 
       if (summary.success.length > 0) {
-        warningAlert(`Successfully processed: ${summary.success.join(', ')}`);
+        successAlert(`Successfully processed: ${summary.success.join(', ')}`);
+        await updateTokenList(); // Update token list after success
       }
       if (summary.failed.length > 0) {
         warningAlert(`Failed to process: ${summary.failed.join(', ')}`);
@@ -745,6 +779,13 @@ export default function Home() {
     symbol: string,
     value: number
   }
+
+  const updateTokenList = async () => {
+    if (!publicKey) return;
+    const updatedList = await walletScan(publicKey.toString());
+    setTokenList(updatedList);
+    setSelectedTokenList([]);
+  };
 
   return (
     <div className="w-full h-full flex flex-row items-center pb-6 relative">

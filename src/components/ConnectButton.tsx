@@ -12,6 +12,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { getMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { getMetadataAccountDataSerializer } from '@metaplex-foundation/mpl-token-metadata';
 import { getPdaMetadataKey } from "@raydium-io/raydium-sdk";
+import { RateLimiter } from "@/utils/rate-limiter";
 
 const ConnectButton: FC = () => {
   const { setTokenList, setLoadingState, setTokeBalance, swapState } = useContext<any>(UserContext);
@@ -30,60 +31,64 @@ const ConnectButton: FC = () => {
 
   const getTokenInfo = async (address: string) => {
     const solanaConnection = new Connection(String(process.env.NEXT_PUBLIC_SOLANA_RPC));
+    const rateLimiter = new RateLimiter(2); // 2 requests per second
 
     const tokenAccounts = await solanaConnection.getParsedTokenAccountsByOwner(new PublicKey(address), {
       programId: TOKEN_PROGRAM_ID,
     });
+
     const tokenMints = await Promise.all(
       tokenAccounts.value.map(async (account) => {
         try {
-          const mint = account.account.data.parsed.info.mint; // Extract mint address
-          const tokenAmount = account.account.data.parsed.info.tokenAmount.uiAmount; // Extract token balance
+          const mint = account.account.data.parsed.info.mint;
+          const tokenAmount = account.account.data.parsed.info.tokenAmount.uiAmount;
 
-          const mintPublicKey = new PublicKey(mint);
-          const priceRes = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`)
-          const priceData = await priceRes.json();
+          // Rate limit the metadata and price fetching
+          return rateLimiter.schedule(async () => {
+            try {
+              const mintPublicKey = new PublicKey(mint);
+              const priceRes = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
+              const priceData = await priceRes.json();
+              const price = priceData.data[mint]?.price || 0;
 
-          // Get price data for the specific token
-          const price = priceData.data[mint]?.price || 0;
+              const metadataPDA = getPdaMetadataKey(mintPublicKey);
+              const metadataAccount = await solanaConnection.getAccountInfo(metadataPDA.publicKey);
 
-          console.log("🚀 ~ tokenAccounts.value.map ~ price:", price)
-          const metadataPDA = getPdaMetadataKey(mintPublicKey);
-          const metadataAccount = await solanaConnection.getAccountInfo(metadataPDA.publicKey);
+              if (!metadataAccount?.data) {
+                console.log(`No metadata found for token ${mint}`);
+                return null;
+              }
 
-          if (!metadataAccount?.data) {
-            return { ok: false, message: 'Mutable -> Failed to fetch account data' };
-          }
-          const serializer = getMetadataAccountDataSerializer()
-          const deserialize = serializer.deserialize(metadataAccount.data as any);
-          console.log("🚀 ~ tokenAccounts.value.map ~ deserialize:", deserialize)
-          const mintInfo = await getMint(solanaConnection, mintPublicKey);
-          console.log("🚀 ~ tokenAccounts.value.map ~ mintInfo:", mintInfo)
-          if(mintInfo.decimals == 0) {
-            return null;
-          }
+              const serializer = getMetadataAccountDataSerializer();
+              const deserialize = serializer.deserialize(metadataAccount.data as any);
+              const mintInfo = await getMint(solanaConnection, mintPublicKey);
 
-          // Extract name and symbol from metadata
-          const name = deserialize[0]?.name;
-          const symbol = deserialize[0]?.symbol;
+              if (mintInfo.decimals === 0) {
+                return null;
+              }
 
-          return { id: mint, balance: tokenAmount, name, symbol, price, decimal: mintInfo.decimals };
-          // Return mint, balance, name, and symbol
+              return {
+                id: mint,
+                balance: tokenAmount,
+                name: deserialize[0]?.name || 'Unknown',
+                symbol: deserialize[0]?.symbol || 'Unknown',
+                price,
+                decimal: mintInfo.decimals
+              };
+            } catch (error) {
+              console.warn(`Failed to fetch complete data for token ${mint}:`, error);
+              return null;
+            }
+          });
         } catch (error) {
-          console.error("Failed to fetch metadata for mint:", account.account.data.parsed.info.mint, error);
-
-          // Return data without name and symbol in case of error
-          return {
-            mint: account.account.data.parsed.info.mint,
-            balance: account.account.data.parsed.info.tokenAmount.uiAmount,
-            name: 'Unknown',
-            symbol: 'Unknown',
-          };
+          console.error("Failed to process token account:", error);
+          return null;
         }
       })
     );
-    return tokenMints;
-  }
+
+    return tokenMints.filter(Boolean); // Remove null entries
+  };
 
   const getTokenList = async (address: string) => {
     setLoadingState(true); // Set loading state to true before the async operation

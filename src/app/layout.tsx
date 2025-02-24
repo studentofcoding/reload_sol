@@ -6,8 +6,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "SWAP TOKEN",
-  description: "swap token on wallet",
+  title: "Trencher barrack | Reload your SOL",
+  description: "Trencher barrack | Reload your SOL",
 };
 
 export default function RootLayout({

@@ -22,6 +22,7 @@ import { toast } from "react-hot-toast";
 import { IoMdRefresh } from "react-icons/io";
 import { getTokenListMoreThanZero, getTokenListZeroAmount, forceRefreshTokens } from "@/utils/tokenList";
 import { TokenInfo } from "@/types/token";
+import { cacheOperation, syncOperationsToSupabase, supabase } from '@/utils/supabase';
 // import { SolanaTracker } from "solana-swap-jito";
 
 const SLIPPAGE = 20;
@@ -240,6 +241,24 @@ export default function Home() {
       setTokenCounts({ zero, nonZero });
     }
   }, [tokenList]);
+
+  useEffect(() => {
+    // Test Supabase connection
+    const testConnection = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('token_operations')
+          .select('*', { count: 'exact', head: true });
+        
+        if (error) throw error;
+        console.log('Supabase connection successful');
+      } catch (error) {
+        console.error('Supabase connection error:', error);
+      }
+    };
+
+    testConnection();
+  }, []);
 
   const changeToken = async () => {
     if (!publicKey?.toBase58()) {
@@ -476,6 +495,15 @@ export default function Home() {
         setLoadingText("Processing swaps...");
         const swapResults = await sendJitoBundles(signedSwapBundle, selectedTokens);
         
+        // Track successful swaps
+        if (swapResults.successfulTokens.length > 0) {
+          cacheOperation(
+            wallet.publicKey.toString(),
+            'swap',
+            swapResults.successfulTokens.length
+          );
+        }
+
         // Update token statuses
         swapResults.successfulTokens.forEach(tokenId => {
           tokenStatuses.get(tokenId)!.swapComplete = true;
@@ -554,8 +582,13 @@ export default function Home() {
         setLoadingText("Processing closes...");
         const closeResults = await sendJitoBundles(signedBundle, selectedTokens);
 
-        // Update UI based on results
+        // Track successful operations
         if (closeResults.successfulTokens.length > 0) {
+          cacheOperation(
+            wallet.publicKey.toString(),
+            'close',
+            closeResults.successfulTokens.length
+          );
           successAlert(`Successfully closed ${closeResults.successfulTokens.length} accounts`);
           await refreshTokenList();
         }
@@ -1028,8 +1061,17 @@ export default function Home() {
     </div>
   );
 
+  // Add periodic sync
+  useEffect(() => {
+    const syncInterval = setInterval(() => {
+      syncOperationsToSupabase();
+    }, 5 * 60 * 1000); // 5 minutes
+
+    return () => clearInterval(syncInterval);
+  }, []);
+
   return (
-    <div className="w-full h-full flex flex-row items-center pb-6 relative">
+    <div className="w-full h-full flex flex-col items-center pb-6 relative">
       <div className="container">
         <div className="flex flex-col items-center justify-between w-full h-full rounded-xl border-[1px] border-[#26c3ff] max-w-4xl mx-auto py-6 gap-4 z-20 relative">
           <div className="w-full flex justify-between flex-col sm2:flex-row items-center h-full px-4 border-b-[1px] border-b-[#26c3ff] pb-4">
@@ -1039,8 +1081,8 @@ export default function Home() {
                 className="flex flex-col px-5 py-1 rounded-full border-[1px] border-[#26c3ff] text-[#26c3ff] font-semibold cursor-pointer hover:shadow-sm hover:shadow-[#26c3ff]"
               >
                 {swapState ? 
-                `Your dust section (${tokenCounts.nonZero} tokens)` : 
-                `Your useless section (${tokenCounts.zero} tokens)`
+                `Your dust tokens section (${tokenCounts.nonZero} tokens)` : 
+                `Your useless tokens section (${tokenCounts.zero} tokens)`
               }
               </div>
               <button
@@ -1221,7 +1263,7 @@ export default function Home() {
                 className={`${
                   publicKey?.toBase58() !== undefined 
                     ? "border-[#26c3ff] cursor-pointer text-[#26c3ff] hover:bg-[#26c3ff] hover:text-white" 
-                    : "border-[#1c1d1d] cursor-not-allowed text-[#1c1d1d]"
+                      : "border-[#1c1d1d] cursor-not-allowed text-[#1c1d1d]"
                   } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
               >
                 Autoswap & Reload my SOL
@@ -1246,7 +1288,19 @@ export default function Home() {
           )}
         </div>
       </div>
-    </div >
+      
+      {/* Footer - now properly centered below main content */}
+      <div className="w-full text-center text-[#26c3ff] text-sm mt-4 opacity-80">
+        <p>Created with love by <a 
+          href="https://x.com/y_techies_guy" 
+          target="_blank" 
+          rel="noopener noreferrer"
+          className="hover:text-white transition-colors"
+        >@y_techies_guy</a></p>
+        <p className="text-xs mt-1">Kindly DM for any questions, collaboration or opportunity</p>
+        <p className="text-xs mt-1">Happy degening! 🚀</p>
+      </div>
+    </div>
   );
 };
 

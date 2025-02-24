@@ -19,10 +19,12 @@ interface TokenOperations {
   wallet_address: string;
   close_count: number;
   swap_count: number;
+  timestamp: string;
 }
 
 // Local storage key
 const OPERATIONS_CACHE_KEY = 'token_operations_cache';
+const LAST_SYNC_KEY = 'last_sync_time';
 
 // Get cached operations
 export const getCachedOperations = (): TokenOperations[] => {
@@ -37,36 +39,50 @@ export const getCachedOperations = (): TokenOperations[] => {
 // Add operation to cache
 export const cacheOperation = (walletAddress: string, type: 'close' | 'swap', count: number) => {
   const operations = getCachedOperations();
+  const timestamp = new Date().toISOString();
   const existing = operations.find(op => op.wallet_address === walletAddress);
 
   if (existing) {
     if (type === 'close') existing.close_count += count;
     else existing.swap_count += count;
+    existing.timestamp = timestamp;
   } else {
     operations.push({
       wallet_address: walletAddress,
       close_count: type === 'close' ? count : 0,
-      swap_count: type === 'swap' ? count : 0
+      swap_count: type === 'swap' ? count : 0,
+      timestamp
     });
   }
 
   localStorage.setItem(OPERATIONS_CACHE_KEY, JSON.stringify(operations));
 };
 
+// Check if 5 minutes have passed since last sync
+const shouldSync = (): boolean => {
+  const lastSync = localStorage.getItem(LAST_SYNC_KEY);
+  if (!lastSync) return true;
+
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  return new Date(lastSync) < fiveMinutesAgo;
+};
+
 // Sync cached operations to Supabase
 export const syncOperationsToSupabase = async () => {
+  if (!shouldSync()) return;
+  
   const operations = getCachedOperations();
   if (operations.length === 0) return;
 
   try {
     for (const operation of operations) {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('token_operations')
         .upsert({
           wallet_address: operation.wallet_address,
           close_count: operation.close_count,
           swap_count: operation.swap_count,
-          last_operation_time: new Date().toISOString()
+          last_operation_time: operation.timestamp
         }, {
           onConflict: 'wallet_address',
           ignoreDuplicates: false
@@ -75,8 +91,11 @@ export const syncOperationsToSupabase = async () => {
       if (error) throw error;
     }
 
-    // Clear cache after successful sync
+    // Update last sync time and clear cache after successful sync
+    localStorage.setItem(LAST_SYNC_KEY, new Date().toISOString());
     localStorage.setItem(OPERATIONS_CACHE_KEY, '[]');
+    
+    console.log('Successfully synced operations at:', new Date().toISOString());
   } catch (error) {
     console.error('Failed to sync operations:', error);
   }

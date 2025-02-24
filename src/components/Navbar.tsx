@@ -101,10 +101,10 @@ async function getWorkingConnection() {
       const connection = new Connection(endpoint, "confirmed");
       // Test the connection
       await connection.getLatestBlockhash();
-      console.log(`Connected to RPC: ${endpoint}`);
+      // console.log(`Connected to RPC: ${endpoint}`);
       return connection;
     } catch (error) {
-      console.warn(`RPC ${endpoint} failed, trying next one...`);
+      // console.warn(`RPC ${endpoint} failed, trying next one...`);
       continue;
     }
   }

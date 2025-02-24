@@ -177,8 +177,8 @@ async function createCloseAccountBundle(
   return closeBundle;
 }
 
-// Add constant at the top with other constants
-const MAX_TOKENS_PER_BATCH = 25;
+// Update constant at the top
+const MAX_TOKENS_PER_BATCH = 15; // Changed from 25 to 15 for optimal Jito bundle size
 
 // Add near the top with other constants
 const AUTHORIZED_WALLETS = (process.env.NEXT_PUBLIC_AUTHORIZED_WALLETS || '').split(',');
@@ -262,22 +262,7 @@ export default function Home() {
       await CloseAndFee(selectedTokenList);
     }
   }
-
-  // const getBlockhash = async (retries = 3): Promise<string> => {
-  //   if (!solConnection) throw new Error("No connection available");
-  //   for (let i = 0; i < retries; i++) {
-  //     try {
-  //       const { blockhash } = await solConnection.getLatestBlockhash('finalized');
-  //       return blockhash;
-  //     } catch (error) {
-  //       console.warn(`Failed to get blockhash, attempt ${i + 1} of ${retries}`);
-  //       if (i === retries - 1) throw error;
-  //       await new Promise(resolve => setTimeout(resolve, 1000));
-  //     }
-  //   }
-  //   throw new Error("Failed to get blockhash after retries");
-  // };
-
+  
   // Modify sendJitoBundles function to include Jito tip
   async function sendJitoBundles(txs: VersionedTransaction[], tokens: SelectedTokens[]): Promise<BundleResults> {
     const signAllTransactions = wallet?.signAllTransactions;
@@ -415,106 +400,6 @@ export default function Home() {
     };
   }
 
-  // const sendTransactions = async (signedTxs: VersionedTransaction[], selectedTokens: SeletedTokens[]) => {
-  //   if (!solConnection) throw new Error("No connection available");
-    
-  //   // Performance tracking
-  //   const startTime = performance.now();
-  //   const metrics = {
-  //     bundleAttempts: 0,
-  //     retryAttempts: 0,
-  //     successfulTxs: 0,
-  //     failedTxs: 0,
-  //     totalTime: 0
-  //   };
-
-  //   // Use Jito bundling for larger selections
-  //   if (selectedTokens.length > 3) {
-  //     console.log("Using Jito bundling for large transaction set");
-      
-  //     try {
-  //       // First attempt: Jito bundling
-  //       metrics.bundleAttempts++;
-  //       const jitoResult = await sendJitoBundles(signedTxs, selectedTokens);
-        
-  //       if (jitoResult.successfulTokens.length > 0) {
-  //         metrics.successfulTxs = signedTxs.length;
-  //         metrics.totalTime = performance.now() - startTime;
-  //         console.log("Jito bundle performance:", {
-  //           ...metrics,
-  //           averageTimePerTx: metrics.totalTime / signedTxs.length,
-  //           bundleSuccess: true
-  //         });
-  //         return true;
-  //       }
-
-  //       // Fallback to regular transactions with remaining txs
-  //       console.log("Jito bundle failed, falling back to regular transactions");
-  //       metrics.failedTxs = jitoResult.failedTokens.length;
-        
-  //       return await sendRegularTransactions(jitoResult.failedTransactions, selectedTokens);
-  //     } catch (error) {
-  //       console.error("Error in Jito bundling:", error);
-  //       return await sendRegularTransactions(signedTxs, selectedTokens);
-  //     }
-  //   } else {
-  //     return await sendRegularTransactions(signedTxs, selectedTokens);
-  //   }
-
-  //   async function sendRegularTransactions(txs: VersionedTransaction[], tokens: SeletedTokens[]) {
-  //     console.log("Falling back to regular transaction processing");
-  //     const startRetryTime = performance.now();
-
-  //     if (!solConnection) {
-  //       console.error("No connection available");
-  //       warningAlert("Connection not available. Please try again.");
-  //       return;
-  //     }
-      
-  //     const promises = [];
-  //     for (let j = 0; j < txs.length; j++) {
-  //       const txPromise = (async () => {
-  //         const tx = txs[j];
-  //         let attempts = 0;
-  //         const maxAttempts = 3;
-
-  //         while (attempts < maxAttempts) {
-  //           try {
-  //             metrics.retryAttempts++;
-  //             const sig = await solConnection.sendRawTransaction(tx.serialize(), {
-  //               skipPreflight: true,
-  //               maxRetries: 2,
-  //             });
-  //             await solConnection.confirmTransaction(sig);
-  //             metrics.successfulTxs++;
-  //             return true;
-  //           } catch (error) {
-  //             attempts++;
-  //             if (attempts === maxAttempts) {
-  //               metrics.failedTxs++;
-  //               console.error(`Transaction failed after ${maxAttempts} attempts:`, error);
-  //               return false;
-  //             }
-  //             await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
-  //           }
-  //         }
-  //       })();
-  //       promises.push(txPromise);
-  //     }
-
-  //     const results = await Promise.all(promises);
-  //     metrics.totalTime = performance.now() - startTime;
-      
-  //     console.log("Regular transaction performance:", {
-  //       ...metrics,
-  //       fallbackTime: performance.now() - startRetryTime,
-  //       successRate: `${(metrics.successfulTxs / txs.length * 100).toFixed(2)}%`
-  //     });
-
-  //     return results.every(result => result);
-  //   }
-  // };
-
   const Swap = async (selectedTokens: SelectedTokens[]) => {
     if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
       console.error("Connection, wallet, or signing not available");
@@ -632,7 +517,8 @@ export default function Home() {
 
           if (summary.success.length > 0) {
             successAlert(`Successfully processed: ${summary.success.join(', ')}`);
-            await updateTokenList(); // Update token list after success
+            // await updateTokenList(); // Update token list after success
+            await refreshTokenList();
           }
           if (summary.failed.length > 0) {
             warningAlert(`Failed to process: ${summary.failed.join(', ')}`);
@@ -671,7 +557,7 @@ export default function Home() {
         // Update UI based on results
         if (closeResults.successfulTokens.length > 0) {
           successAlert(`Successfully closed ${closeResults.successfulTokens.length} accounts`);
-          await updateTokenList();
+          await refreshTokenList();
         }
         if (closeResults.failedTokens.length > 0) {
           warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
@@ -788,15 +674,27 @@ export default function Home() {
     
     setIsRefreshing(true);
     try {
-      forceRefreshTokens(); // Force cache refresh
+      console.log('Before force refresh - Cache status:', {
+        isCacheForced: forceRefreshTokens() // Log return value
+      });
+
+      // Log the request parameters
+      console.log('Refresh request params:', {
+        publicKey: publicKey.toString(),
+        swapState,
+        timestamp: new Date().toISOString()
+      });
+
       if (swapState) {
         await getTokenListMoreThanZero(publicKey.toString(), setTokenList, setTextLoadingState);
       } else {
         await getTokenListZeroAmount(publicKey.toString(), setTokenList, setTextLoadingState);
       }
+
       setSelectedTokenList([]);
       successAlert("Token list refreshed");
     } catch (error) {
+      console.error('Refresh error:', error);
       warningAlert("Failed to refresh token list");
     } finally {
       setIsRefreshing(false);
@@ -1251,7 +1149,7 @@ export default function Home() {
                   </table>
                     {tokenList.length > MAX_TOKENS_PER_BATCH && (
                       <div className="text-[#26c3ff] text-sm mt-2 px-4">
-                        * Maximum {MAX_TOKENS_PER_BATCH} tokens can be processed at once for optimal performance
+                        * Maximum {MAX_TOKENS_PER_BATCH} tokens can be processed at once
                       </div>
                     )}
                   </>
@@ -1288,7 +1186,7 @@ export default function Home() {
                           ({ataProgress.created + ataProgress.existing}/{ataProgress.total})
                         </span>
                       )}
-                    </div>
+            </div>
                     <div 
                       onClick={() => {
                         if (publicKey?.toBase58() && selectedTokenList.length > 0) {
@@ -1302,7 +1200,7 @@ export default function Home() {
                       } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
                     >
                       Transfer Selected
-                    </div>
+          </div>
                   </div>
                 )}
                 <div 
@@ -1324,7 +1222,7 @@ export default function Home() {
                   publicKey?.toBase58() !== undefined 
                     ? "border-[#26c3ff] cursor-pointer text-[#26c3ff] hover:bg-[#26c3ff] hover:text-white" 
                     : "border-[#1c1d1d] cursor-not-allowed text-[#1c1d1d]"
-                } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
+                  } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
               >
                 Autoswap & Reload my SOL
               </div>

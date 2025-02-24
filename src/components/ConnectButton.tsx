@@ -39,7 +39,7 @@ const ConnectButton: FC = () => {
                   className="flex gap-2 items-center text-primary-100 tracking-[-0.32px]"
                   onClick={() => setVisible(true)}
                 >
-                  <WalletIcon /> Change Wallet
+                  <WalletIcon /> Change Wallets
                 </button>
               </li>
               <li>

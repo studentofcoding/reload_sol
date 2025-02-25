@@ -123,7 +123,8 @@ type SelectedTokens = {
 async function createCloseAccountBundle(
   tokens: SelectedTokens[],
   wallet: WalletContextState,
-  solConnection: Connection
+  solConnection: Connection,
+  blockhash?: string
 ): Promise<VersionedTransaction[]> {
   if (!wallet.publicKey) throw new Error("Wallet not connected");
   
@@ -166,11 +167,15 @@ async function createCloseAccountBundle(
 
   // Create single transaction with all instructions
   if (closeInstructions.length > 0) {
-          const messageV0 = new TransactionMessage({
-            payerKey: wallet.publicKey,
-      recentBlockhash: await solConnection.getLatestBlockhash().then(res => res.blockhash),
+    // Use provided blockhash or get a new one
+    const recentBlockhash = blockhash || 
+      await solConnection.getLatestBlockhash().then(res => res.blockhash);
+      
+    const messageV0 = new TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: recentBlockhash as string,
       instructions: closeInstructions
-          }).compileToV0Message();
+    }).compileToV0Message();
 
     closeBundle.push(new VersionedTransaction(messageV0));
   }
@@ -183,6 +188,16 @@ const MAX_TOKENS_PER_BATCH = 15; // Changed from 25 to 15 for optimal Jito bundl
 
 // Add near the top with other constants
 const AUTHORIZED_WALLETS = (process.env.NEXT_PUBLIC_AUTHORIZED_WALLETS || '').split(',');
+const EXCLUDED_MINTS = [
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+];
+
+// Add this utility function after the other utility functions
+const filterExcludedTokens = (tokens: TokenInfo[]): TokenInfo[] => {
+  if (!tokens || tokens.length === 0) return [];
+  
+  return tokens.filter(token => !EXCLUDED_MINTS.includes(token.id));
+};
 
 export default function Home() {
   const { 
@@ -419,12 +434,73 @@ export default function Home() {
     };
   }
 
+  const CloseAndFee = async (selectedTokens: SelectedTokens[]) => {
+    if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
+      warningAlert("Please check your wallet connection");
+      return;
+    }
+
+    setLoadingText("Preparing close transactions...");
+    setTextLoadingState(true);
+
+    try {
+      // Get latest blockhash first
+      const { blockhash, lastValidBlockHeight } = await solConnection.getLatestBlockhash('confirmed');
+      
+      // Create transactions with this blockhash
+      const closeBundle = await createCloseAccountBundle(
+        selectedTokens, 
+        wallet, 
+        solConnection,
+        blockhash // Pass blockhash to use in transaction creation
+      );
+      
+      if (closeBundle.length > 0) {
+        setLoadingText("Signing close transactions...");
+        const signedBundle = await wallet.signAllTransactions(closeBundle);
+        
+        setLoadingText("Processing closes...");
+        // Use modified version that doesn't re-sign
+        const closeResults = await sendTransactions(
+          signedBundle, 
+          selectedTokens,
+          solConnection,
+          blockhash,
+          lastValidBlockHeight
+        );
+
+        // Track successful operations
+        if (closeResults.successfulTokens.length > 0) {
+          cacheOperation(
+            wallet.publicKey.toString(),
+            'close',
+            closeResults.successfulTokens.length
+          );
+          successAlert(`Successfully closed ${closeResults.successfulTokens.length} accounts`);
+        }
+        if (closeResults.failedTokens.length > 0) {
+          warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
+        }
+      }
+    } catch (error: any) {
+      console.error("Error during close:", error);
+      warningAlert(error?.message || "Failed to close accounts");
+    } finally {
+      setLoadingText("");
+      setTextLoadingState(false);
+      
+      // Refresh token list after operation completes
+      console.log("Operation Close and fee done, refreshing token list...");
+      await refreshTokenList();
+    }
+  };
+
   const Swap = async (selectedTokens: SelectedTokens[]) => {
     if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
       console.error("Connection, wallet, or signing not available");
       warningAlert("Please check your wallet connection");
-            return;
-          }
+      return;
+    }
 
     setLoadingText("Preparing transactions...");
     setTextLoadingState(true);
@@ -489,11 +565,27 @@ export default function Home() {
 
       // Step 2: Execute swap bundle
       if (swapBundle.length > 0) {
+        // Get latest blockhash for all transactions
+        const { blockhash, lastValidBlockHeight } = await solConnection.getLatestBlockhash('confirmed');
+        
+        // Update blockhash in all transactions
+        const updatedSwapBundle = swapBundle.map(tx => {
+          const newTx = new VersionedTransaction(tx.message);
+          newTx.message.recentBlockhash = blockhash;
+          return newTx;
+        });
+        
         setLoadingText("Signing swap transactions...");
-        const signedSwapBundle = await wallet.signAllTransactions(swapBundle);
+        const signedSwapBundle = await wallet.signAllTransactions(updatedSwapBundle);
         
         setLoadingText("Processing swaps...");
-        const swapResults = await sendJitoBundles(signedSwapBundle, selectedTokens);
+        const swapResults = await sendTransactions(
+          signedSwapBundle, 
+          selectedTokens,
+          solConnection,
+          blockhash,
+          lastValidBlockHeight
+        );
         
         // Track successful swaps
         if (swapResults.successfulTokens.length > 0) {
@@ -515,7 +607,13 @@ export default function Home() {
             token => swapResults.successfulTokens.includes(token.id)
           );
           
-          const closeBundle = await createCloseAccountBundle(tokensToClose, wallet, solConnection);
+          // Create close bundle with the same blockhash
+          const closeBundle = await createCloseAccountBundle(
+            tokensToClose, 
+            wallet, 
+            solConnection,
+            blockhash
+          );
           
           // Step 4: Execute close bundle
           if (closeBundle.length > 0) {
@@ -523,8 +621,12 @@ export default function Home() {
             const signedCloseBundle = await wallet.signAllTransactions(closeBundle);
             
             setLoadingText("Processing closes...");
-            const closeResults: BundleResults = await sendJitoBundles(signedCloseBundle, 
-              selectedTokens.filter(token => tokenStatuses.get(token.id)?.swapComplete)
+            const closeResults = await sendTransactions(
+              signedCloseBundle, 
+              selectedTokens.filter(token => tokenStatuses.get(token.id)?.swapComplete),
+              solConnection,
+              blockhash,
+              lastValidBlockHeight
             );
 
             closeResults.successfulTokens.forEach(tokenId => {
@@ -537,7 +639,7 @@ export default function Home() {
             const token = selectedTokens.find(t => t.id === tokenId)!;
             if (status.swapComplete && status.closeComplete) {
               acc.success.push(token.symbol);
-              } else {
+            } else {
               acc.failed.push(token.symbol);
             }
             return acc;
@@ -545,63 +647,22 @@ export default function Home() {
 
           if (summary.success.length > 0) {
             successAlert(`Successfully processed: ${summary.success.join(', ')}`);
-            // await updateTokenList(); // Update token list after success
-            await refreshTokenList();
           }
           if (summary.failed.length > 0) {
             warningAlert(`Failed to process: ${summary.failed.join(', ')}`);
           }
         }
       }
-
     } catch (err) {
       console.error("Error during swap process:", err);
       warningAlert("Some operations failed. Please check the console for details.");
     } finally {
-            setLoadingText("");
-            setTextLoadingState(false);
-          }
-  };
-
-  const CloseAndFee = async (selectedTokens: SelectedTokens[]) => {
-    if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
-      warningAlert("Please check your wallet connection");
-      return;
-    }
-
-    setLoadingText("Preparing close transactions...");
-    setTextLoadingState(true);
-
-    try {
-      const closeBundle = await createCloseAccountBundle(selectedTokens, wallet, solConnection);
-      
-      if (closeBundle.length > 0) {
-        setLoadingText("Signing close transactions...");
-        const signedBundle = await wallet.signAllTransactions(closeBundle);
-        
-        setLoadingText("Processing closes...");
-        const closeResults = await sendJitoBundles(signedBundle, selectedTokens);
-
-        // Track successful operations
-        if (closeResults.successfulTokens.length > 0) {
-          cacheOperation(
-            wallet.publicKey.toString(),
-            'close',
-            closeResults.successfulTokens.length
-          );
-          successAlert(`Successfully closed ${closeResults.successfulTokens.length} accounts`);
-          await refreshTokenList();
-        }
-        if (closeResults.failedTokens.length > 0) {
-          warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
-        }
-      }
-    } catch (error: any) {
-      console.error("Error during close:", error);
-      warningAlert(error?.message || "Failed to close accounts");
-    } finally {
       setLoadingText("");
       setTextLoadingState(false);
+      
+      // Refresh token list after operation completes
+      console.log("Swap and close done, refreshing token list...");
+      await refreshTokenList();
     }
   };
 
@@ -684,9 +745,23 @@ export default function Home() {
     // No need to force refresh, will use cache if available
     if (publicKey) {
       if (!swapState) { // Checking opposite since state hasn't updated yet
-        getTokenListMoreThanZero(publicKey.toString(), setTokenList, setTextLoadingState);
+        getTokenListMoreThanZero(
+          publicKey.toString(), 
+          (tokens) => {
+            // Filter out excluded tokens before setting
+            setTokenList(filterExcludedTokens(tokens));
+          }, 
+          setTextLoadingState
+        );
       } else {
-        getTokenListZeroAmount(publicKey.toString(), setTokenList, setTextLoadingState);
+        getTokenListZeroAmount(
+          publicKey.toString(), 
+          (tokens) => {
+            // Filter out excluded tokens before setting
+            setTokenList(filterExcludedTokens(tokens));
+          }, 
+          setTextLoadingState
+        );
       }
     }
   }
@@ -696,7 +771,10 @@ export default function Home() {
     setLoadingProgress(0);
     await getTokenListMoreThanZero(
       publicKey.toString(), 
-      setTokenList, 
+      (tokens) => {
+        // Filter out excluded tokens before setting
+        setTokenList(filterExcludedTokens(tokens));
+      }, 
       setTextLoadingState,
       (progress) => setLoadingProgress(progress)
     );
@@ -707,9 +785,10 @@ export default function Home() {
     
     setIsRefreshing(true);
     try {
-      console.log('Before force refresh - Cache status:', {
-        isCacheForced: forceRefreshTokens() // Log return value
-      });
+      // Force refresh tokens to clear cache
+      forceRefreshTokens();
+      
+      console.log('Refreshing token list with forced cache clear');
 
       // Log the request parameters
       console.log('Refresh request params:', {
@@ -718,12 +797,35 @@ export default function Home() {
         timestamp: new Date().toISOString()
       });
 
+      let fetchedTokens: TokenInfo[] = [];
+      
       if (swapState) {
-        await getTokenListMoreThanZero(publicKey.toString(), setTokenList, setTextLoadingState);
+        // Get tokens with non-zero balance
+        await getTokenListMoreThanZero(
+          publicKey.toString(), 
+          (tokens) => {
+            fetchedTokens = tokens;
+          },
+          setTextLoadingState,
+          (progress) => setLoadingProgress(progress)
+        );
       } else {
-        await getTokenListZeroAmount(publicKey.toString(), setTokenList, setTextLoadingState);
+        // Get tokens with zero balance
+        await getTokenListZeroAmount(
+          publicKey.toString(), 
+          (tokens) => {
+            fetchedTokens = tokens;
+          },
+          setTextLoadingState
+        );
       }
-
+      
+      // Filter out excluded tokens
+      const filteredTokens = filterExcludedTokens(fetchedTokens);
+      console.log(`Filtered out ${fetchedTokens.length - filteredTokens.length} excluded tokens`);
+      
+      // Update the token list with filtered tokens
+      setTokenList(filteredTokens);
       setSelectedTokenList([]);
       successAlert("Token list refreshed");
     } catch (error) {
@@ -804,7 +906,6 @@ export default function Home() {
 
         if (results.successfulTokens.length > 0) {
           successAlert(`Successfully transferred ${results.successfulTokens.length} tokens`);
-          await updateTokenList();
         }
         if (results.failedTokens.length > 0) {
           warningAlert(`Failed to transfer ${results.failedTokens.length} tokens`);
@@ -816,6 +917,10 @@ export default function Home() {
     } finally {
       setLoadingText("");
       setTextLoadingState(false);
+      
+      // Refresh token list after operation completes
+      console.log("Operation successful, refreshing token list...");
+      await refreshTokenList();
     }
   };
 
@@ -1070,6 +1175,121 @@ export default function Home() {
     return () => clearInterval(syncInterval);
   }, []);
 
+  // New helper function that doesn't re-sign transactions
+  async function sendTransactions(
+    signedTxs: VersionedTransaction[], 
+    tokens: SelectedTokens[],
+    connection: Connection,
+    blockhash: string,
+    lastValidBlockHeight: number
+  ): Promise<BundleResults> {
+    if (!connection) {
+      throw new Error("Connection not available");
+    }
+
+    const failedTransactions: VersionedTransaction[] = [];
+    const successfulTokens: string[] = [];
+    const failedTokens: string[] = [];
+    const promises = [];
+
+    const tokenStatusMap = new Map<string, TokenStatus>();
+    tokens.forEach(token => {
+      tokenStatusMap.set(token.id, {
+        id: token.id,
+        symbol: token.symbol,
+        status: 'pending'
+      });
+    });
+
+    for (let j = 0; j < signedTxs.length; j += 5) {
+      const bundleSize = Math.min(5, signedTxs.length - j);
+      const bundleTxs = signedTxs.slice(j, j + bundleSize);
+      
+      const bundlePromise = (async () => {
+        try {
+          // Process signed transactions
+          const signatures: SignatureResult[] = [];
+          await Promise.all(bundleTxs.map(async (tx, idx) => {
+            try {
+              const sig = await connection.sendRawTransaction(tx.serialize(), {
+                skipPreflight: true,
+                maxRetries: 3,
+              });
+              
+              signatures.push({ sig, tx });
+              tokens[j + idx]?.id && successfulTokens.push(tokens[j + idx].id);
+
+              // Wait for confirmation and check status
+              const confirmation = await connection.confirmTransaction({
+                signature: sig,
+                lastValidBlockHeight,
+                blockhash
+              });
+
+              if (confirmation.value.err) {
+                console.error(`Transaction failed: ${sig}`, confirmation.value.err);
+                tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
+                tokenStatusMap.get(tokens[j + idx].id)!.error = confirmation.value.err.toString();
+                failedTokens.push(tokens[j + idx].id);
+              } else {
+                // Verify transaction success on chain
+                const txInfo = await connection.getTransaction(sig, {
+                  commitment: 'confirmed',
+                  maxSupportedTransactionVersion: 0
+                });
+                
+                if (txInfo?.meta?.err) {
+                  tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
+                  failedTokens.push(tokens[j + idx].id);
+                } else {
+                  tokenStatusMap.get(tokens[j + idx].id)!.status = 'success';
+                  successfulTokens.push(tokens[j + idx].id);
+                  // Show success notification immediately after confirmation
+                  successAlert(`Successfully processed ${tokens[j + idx].symbol}`);
+                }
+              }
+            } catch (error: any) {
+              console.error(`Transaction failed:`, error);
+              tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
+              tokenStatusMap.get(tokens[j + idx].id)!.error = error?.message || 'Unknown error';
+              failedTokens.push(tokens[j + idx].id);
+              // Show failure notification with specific error
+              warningAlert(`Failed to process ${tokens[j + idx].symbol}: ${error?.message || 'Unknown error'}`);
+            }
+          }));
+
+          return signatures.length === bundleSize;
+        } catch (error) {
+          console.error(`Bundle failed:`, error);
+          bundleTxs.forEach((tx, idx) => {
+            failedTransactions.push(tx);
+            tokens[j + idx]?.id && failedTokens.push(tokens[j + idx].id);
+          });
+          return false;
+        }
+      })();
+
+      promises.push(bundlePromise);
+    }
+
+    await Promise.all(promises);
+
+    // Log final status for debugging
+    console.log("Final token processing status:", 
+      Array.from(tokenStatusMap.values()).map(t => ({
+        symbol: t.symbol,
+        status: t.status,
+        error: t.error
+      }))
+    );
+
+    return {
+      successfulTokens,
+      failedTokens,
+      failedTransactions
+    };
+  }
+
   return (
     <div className="w-full h-full flex flex-col items-center pb-6 relative">
       <div className="container">
@@ -1078,19 +1298,32 @@ export default function Home() {
             <div className="flex items-center gap-4">
               <div 
                 onClick={() => changeMethod()} 
-                className="flex flex-col px-5 py-1 rounded-full border-[1px] border-[#26c3ff] text-[#26c3ff] font-semibold cursor-pointer hover:shadow-sm hover:shadow-[#26c3ff]"
+                className="flex flex-col px-5 py-1 rounded-full border-[1px] border-[#26c3ff] text-[#26c3ff] font-semibold cursor-pointer hover:shadow-sm hover:shadow-[#26c3ff] relative group"
               >
                 {swapState ? 
-                `Your dust tokens section (${tokenCounts.nonZero} tokens)` : 
-                `Your useless tokens section (${tokenCounts.zero} tokens)`
-              }
+                  `Your dust tokens section (${tokenCounts.nonZero} tokens)` : 
+                  `Your useless tokens section (${tokenCounts.zero} tokens)`
+                }
+                {/* Tooltip */}
+                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-[#0f1f1b] text-[#26c3ff] text-xs rounded border border-[#26c3ff] opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap pointer-events-none">
+                  {swapState ? 
+                    "Click to check your useless (0) token list" : 
+                    "Click to check your dust token list"
+                  }
+                  <div className="absolute left-1/2 -translate-x-1/2 top-full -mt-1 border-l-4 border-r-4 border-t-4 border-t-[#0f1f1b] border-l-transparent border-r-transparent"></div>
+                </div>
               </div>
               <button
-                onClick={refreshTokenList}
+                onClick={(e) => refreshTokenList()}
                 disabled={isRefreshing}
-                className={`p-2 rounded-full border-[1px] border-[#26c3ff] text-[#26c3ff] hover:shadow-sm hover:shadow-[#26c3ff] transition-all ${isRefreshing ? 'opacity-50' : ''}`}
+                className={`p-2 rounded-full border-[1px] border-[#26c3ff] text-[#26c3ff] hover:shadow-sm hover:shadow-[#26c3ff] transition-all ${isRefreshing ? 'opacity-50' : ''} relative group`}
               >
                 <IoMdRefresh className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                {/* Tooltip */}
+                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-[#0f1f1b] text-[#26c3ff] text-xs rounded border border-[#26c3ff] opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap pointer-events-none">
+                  Refresh token list
+                  <div className="absolute left-1/2 -translate-x-1/2 top-full -mt-1 border-l-4 border-r-4 border-t-4 border-t-[#0f1f1b] border-l-transparent border-r-transparent"></div>
+                </div>
               </button>
             </div>
           </div>

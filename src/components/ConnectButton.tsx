@@ -7,7 +7,7 @@ import UserContext from "@/contexts/usercontext";
 import { getTokenListZeroAmount, getTokenListMoreThanZero, forceRefreshTokens } from "@/utils/tokenList";
 
 const ConnectButton: FC = () => {
-  const { setTokenList, setLoadingState, setTokeBalance, swapState } = useContext<any>(UserContext);
+  const { setTokenList, setLoadingState, swapState } = useContext<any>(UserContext);
   const { setVisible } = useWalletModal();
   const { publicKey, disconnect } = useWallet();
 

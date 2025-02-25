@@ -6,8 +6,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Autosol | Reload your SOL",
-  description: "Reload your useless tokens to SOL with ease",
+  title: "Reloadsol | Reload your SOL",
+  description: "Swap and reload your SOL with ease",
 };
 
 export default function RootLayout({

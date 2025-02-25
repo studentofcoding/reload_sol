@@ -47,6 +47,7 @@ export const cacheOperation = (walletAddress: string, type: 'close' | 'swap', co
     else existing.swap_count += count;
     existing.timestamp = timestamp;
   } else {
+    // Create a new entry with appropriate counters
     operations.push({
       wallet_address: walletAddress,
       close_count: type === 'close' ? count : 0,
@@ -56,6 +57,11 @@ export const cacheOperation = (walletAddress: string, type: 'close' | 'swap', co
   }
 
   localStorage.setItem(OPERATIONS_CACHE_KEY, JSON.stringify(operations));
+  
+  // Try to sync immediately, but don't block the UI
+  syncOperationsToSupabase().catch(err => 
+    console.error('Failed to sync operations immediately:', err)
+  );
 };
 
 // Check if 5 minutes have passed since last sync
@@ -99,4 +105,19 @@ export const syncOperationsToSupabase = async () => {
   } catch (error) {
     console.error('Failed to sync operations:', error);
   }
+};
+
+// Set up interval to sync operations to Supabase
+export const setupOperationSync = (): NodeJS.Timeout => {
+  // Initial sync on setup
+  syncOperationsToSupabase().catch(err => 
+    console.error('Failed initial sync:', err)
+  );
+  
+  // Set up interval (every 5 minutes)
+  return setInterval(() => {
+    syncOperationsToSupabase().catch(err => 
+      console.error('Failed periodic sync:', err)
+    );
+  }, 5 * 60 * 1000); // 5 minutes
 }; 

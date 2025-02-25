@@ -22,8 +22,7 @@ import { toast } from "react-hot-toast";
 import { IoMdRefresh } from "react-icons/io";
 import { getTokenListMoreThanZero, getTokenListZeroAmount, forceRefreshTokens } from "@/utils/tokenList";
 import { TokenInfo } from "@/types/token";
-import { cacheOperation, syncOperationsToSupabase, supabase } from '@/utils/supabase';
-// import { SolanaTracker } from "solana-swap-jito";
+import { cacheOperation, syncOperationsToSupabase, supabase, setupOperationSync } from '@/utils/supabase';
 
 const SLIPPAGE = 20;
 
@@ -258,7 +257,7 @@ export default function Home() {
   }, [tokenList]);
 
   useEffect(() => {
-    // Test Supabase connection
+    // Test Supabase connection and set up operation sync
     const testConnection = async () => {
       try {
         const { data, error } = await supabase
@@ -267,6 +266,12 @@ export default function Home() {
         
         if (error) throw error;
         console.log('Supabase connection successful');
+        
+        // Set up operation sync interval
+        const syncInterval = setupOperationSync();
+        
+        // Clean up interval on component unmount
+        return () => clearInterval(syncInterval);
       } catch (error) {
         console.error('Supabase connection error:', error);
       }
@@ -597,7 +602,7 @@ export default function Home() {
         }
 
         // Update token statuses
-        swapResults.successfulTokens.forEach(tokenId => {
+        swapResults.successfulTokens.forEach((tokenId: string) => {
           tokenStatuses.get(tokenId)!.swapComplete = true;
         });
 
@@ -629,7 +634,25 @@ export default function Home() {
               lastValidBlockHeight
             );
 
-            closeResults.successfulTokens.forEach(tokenId => {
+            // Track successful closes after swap
+            if (closeResults.successfulTokens.length > 0) {
+              cacheOperation(
+                wallet.publicKey.toString(),
+                'close',
+                closeResults.successfulTokens.length
+              );
+            }
+            
+            // Track failed closes after swap
+            if (closeResults.failedTokens.length > 0) {
+              cacheOperation(
+                wallet.publicKey.toString(),
+                'close',
+                closeResults.failedTokens.length
+              );
+            }
+
+            closeResults.successfulTokens.forEach((tokenId: string) => {
               tokenStatuses.get(tokenId)!.closeComplete = true;
             });
           }
@@ -836,7 +859,7 @@ export default function Home() {
     }
   };
 
-  // Update transferTokens function to use batching
+  // Update transferTokens function to use batching and track operations
   const transferTokens = async (selectedTokens: SelectedTokens[]) => {
     if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
       warningAlert("Please check your wallet connection");
@@ -905,6 +928,11 @@ export default function Home() {
         const results = await sendJitoBundles(signedBundles, selectedTokens);
 
         if (results.successfulTokens.length > 0) {
+          cacheOperation(
+            wallet.publicKey.toString(),
+            'swap', // Using 'swap' as the operation type for transfers
+            results.successfulTokens.length
+          );
           successAlert(`Successfully transferred ${results.successfulTokens.length} tokens`);
         }
         if (results.failedTokens.length > 0) {
@@ -1166,15 +1194,7 @@ export default function Home() {
     </div>
   );
 
-  // Add periodic sync
-  useEffect(() => {
-    const syncInterval = setInterval(() => {
-      syncOperationsToSupabase();
-    }, 5 * 60 * 1000); // 5 minutes
-
-    return () => clearInterval(syncInterval);
-  }, []);
-
+  // Add periodic sync - this was accidentally removed
   // New helper function that doesn't re-sign transactions
   async function sendTransactions(
     signedTxs: VersionedTransaction[], 

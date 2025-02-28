@@ -19,7 +19,9 @@ interface TokenOperations {
   wallet_address: string;
   close_count: number;
   swap_count: number;
-  timestamp: string;
+  sol_balance: number;
+  last_operation_time: string;
+  last_balance_update: string;
 }
 
 // Local storage key
@@ -45,14 +47,17 @@ export const cacheOperation = (walletAddress: string, type: 'close' | 'swap', co
   if (existing) {
     if (type === 'close') existing.close_count += count;
     else existing.swap_count += count;
-    existing.timestamp = timestamp;
+    existing.last_operation_time = timestamp;
+    existing.last_balance_update = timestamp;
   } else {
     // Create a new entry with appropriate counters
     operations.push({
       wallet_address: walletAddress,
       close_count: type === 'close' ? count : 0,
       swap_count: type === 'swap' ? count : 0,
-      timestamp
+      sol_balance: 0,
+      last_operation_time: timestamp,
+      last_balance_update: timestamp
     });
   }
 
@@ -82,16 +87,31 @@ export const syncOperationsToSupabase = async () => {
 
   try {
     for (const operation of operations) {
+      // First get existing counts
+      const { data: existing } = await supabase
+        .from('token_operations')
+        .select('swap_count, close_count')
+        .eq('wallet_address', operation.wallet_address)
+        .single();
+
+      // Add new counts to existing counts (or start from 0 if no existing record)
+      const newCounts = {
+        swap_count: (existing?.swap_count || 0) + operation.swap_count,
+        close_count: (existing?.close_count || 0) + operation.close_count,
+      };
+
+      // Update with combined counts
       const { error } = await supabase
         .from('token_operations')
         .upsert({
           wallet_address: operation.wallet_address,
-          close_count: operation.close_count,
-          swap_count: operation.swap_count,
-          last_operation_time: operation.timestamp
+          swap_count: newCounts.swap_count,
+          close_count: newCounts.close_count,
+          sol_balance: operation.sol_balance,
+          last_operation_time: operation.last_operation_time,
+          last_balance_update: operation.last_balance_update
         }, {
-          onConflict: 'wallet_address',
-          ignoreDuplicates: false
+          onConflict: 'wallet_address'
         });
 
       if (error) throw error;
@@ -120,4 +140,19 @@ export const setupOperationSync = (): NodeJS.Timeout => {
       console.error('Failed periodic sync:', err)
     );
   }, 5 * 60 * 1000); // 5 minutes
+};
+
+// Added function to update SOL balance
+export const updateWalletBalance = async (walletAddress: string, solBalance: number) => {
+  const { error } = await supabase
+    .from('token_operations')
+    .upsert({
+      wallet_address: walletAddress,
+      sol_balance: solBalance,
+      last_balance_update: new Date().toISOString()
+    }, {
+      onConflict: 'wallet_address'
+    });
+
+  if (error) console.error('Error updating SOL balance:', error);
 }; 

@@ -1,13 +1,12 @@
-import type { Metadata } from "next";
-import { Inter } from "next/font/google";
-import Providers from "./providers";
-import "./globals.css";
+import "@/styles/globals.css"
+import type React from "react"
+import { Providers } from './providers'
+import Navbar from '@/components/Navbar'
+import Header from '@/components/Header'
 
-const inter = Inter({ subsets: ["latin"] });
-
-export const metadata: Metadata = {
-  title: "Reloadsol | Reload your SOL",
-  description: "Swap and reload your SOL with ease",
+export const metadata = {
+  title: "ReloadSOL",
+  description: "Swap all your useless tokens and Reload your SOL",
 };
 
 export default function RootLayout({
@@ -17,8 +16,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
-        <Providers>{children}</Providers>
+      <body className="min-h-screen bg-black antialiased">
+        <Providers>
+          <div className="min-h-screen bg-black">
+            <Header />
+            <Navbar />
+          </div>
+        </Providers>
       </body>
     </html>
   );

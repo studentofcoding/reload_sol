@@ -23,6 +23,8 @@ import { IoMdRefresh } from "react-icons/io";
 import { getTokenListMoreThanZero, getTokenListZeroAmount, forceRefreshTokens } from "@/utils/tokenList";
 import { TokenInfo } from "@/types/token";
 import { cacheOperation, syncOperationsToSupabase, supabase, setupOperationSync } from '@/utils/supabase';
+import TokenListSkeleton from './TokenListSkeleton';
+import PointsPopup from './PointsPopup';
 
 const SLIPPAGE = 20;
 
@@ -52,40 +54,6 @@ interface BundleResults {
   failedTokens: string[];
   failedTransactions: VersionedTransaction[];
 }
-
-// Update the success alert function at the top
-// const successAlert = (message: string) => {
-//   toast(message, {
-//     duration: 4000, // Show for 4 seconds
-//     style: {
-//       background: '#22c55e',
-//       color: '#ffffff',
-//       padding: '16px',
-//       borderRadius: '8px',
-//       fontSize: '14px',
-//       fontWeight: '500'
-//     },
-//     position: 'top-right', // Position in top-right corner
-//     icon: '✅'
-//   });
-// };
-
-// // Update the warning alert in Toast.ts to match style
-// export const warningAlert = (message: string) => {
-//   toast(message, {
-//     duration: 4000,
-//     style: {
-//       background: '#ef4444',
-//       color: '#ffffff',
-//       padding: '16px',
-//       borderRadius: '8px',
-//       fontSize: '14px',
-//       fontWeight: '500'
-//     },
-//     position: 'top-right',
-//     icon: '⚠️'
-//   });
-// };
 
 interface TokenStatus {
   id: string;
@@ -213,7 +181,8 @@ export default function Home() {
     setLoadingText, 
     swapState, 
     setSwapState, 
-    setTokeBalance 
+    setTokeBalance,
+    loadingState
   } = useContext<any>(UserContext);
   const wallet = useWallet();
   const { publicKey } = wallet;
@@ -230,6 +199,9 @@ export default function Home() {
     existing: 0
   });
   const [showAtaDialog, setShowAtaDialog] = useState(false);
+  const [showPopup, setShowPopup] = useState(true);
+  const [points, setPoints] = useState(0);
+  const [tokenCount, setTokenCount] = useState(0);
 
   useEffect(() => {
     // Initialize connection
@@ -279,6 +251,42 @@ export default function Home() {
 
     testConnection();
   }, []);
+
+  useEffect(() => {
+    if (publicKey) {
+      fetchWalletStats();
+    } else {
+      setPoints(0);
+      setTokenCount(0);
+    }
+  }, [publicKey]);
+
+  const fetchWalletStats = async () => {
+    if (!publicKey) return;
+    const walletAddress = publicKey.toBase58();
+
+    try {
+      const { data, error } = await supabase
+        .from('token_operations')
+        .select('swap_count, close_count')
+        .eq('wallet_address', walletAddress)
+        .single();
+
+      if (error) throw error;
+
+      if (data) {
+        const totalTokens = (data.swap_count || 0) + (data.close_count || 0);
+        setTokenCount(totalTokens);
+        setPoints(totalTokens * 16); // Calculate points (16 points per token)
+      }
+    } catch (error) {
+      console.error('Error fetching wallet stats:', error);
+    }
+  };
+
+  const handleClosePopup = () => {
+    setShowPopup(false);
+  };
 
   const changeToken = async () => {
     if (!publicKey?.toBase58()) {
@@ -1311,38 +1319,50 @@ export default function Home() {
   }
 
   return (
-    <div className="w-full h-full flex flex-col items-center pb-6 relative">
-      <div className="container">
-        <div className="flex flex-col items-center justify-between w-full h-full rounded-xl border-[1px] border-[#26c3ff] max-w-4xl mx-auto py-6 gap-4 z-20 relative">
-          <div className="w-full flex justify-between flex-col sm2:flex-row items-center h-full px-4 border-b-[1px] border-b-[#26c3ff] pb-4">
+    <div className="pt-10 relative z-30">
+      <div className="container mx-auto px-4 py-6">
+        <div className="flex flex-col items-center justify-between w-full h-full rounded-xl border-[1px] border-white max-w-4xl mx-auto py-6 gap-4 relative">
+          <div className="w-full flex justify-between flex-col sm2:flex-row items-center h-full px-4 border-b-[1px] border-b-white pb-4">
+            <div className="text-white text-md mb-2 sm2:mb-0">
+              <div className="relative group">
+                <span className="hover:text-gray-300 transition-colors">
+                 You have around <span className="font-bold">{(tokenList?.length || 0) * 0.001} SOL</span> to reload 🚀
+                </span>
+                <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 px-3 py-2 bg-black text-white text-xs rounded border border-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 w-full">
+                  💎 <a href="https://t.me/+qIpGWaw6bXwzMWVl" target="_blank" rel="noopener noreferrer" className="hover:text-gray-300 transition-colors">Join our community here</a> 💎 
+                  <br /> and be a part of IYKYK! 😉
+                  <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-1 border-l-4 border-r-4 border-b-4 border-b-black border-l-transparent border-r-transparent"></div>
+                </div>
+              </div>
+            </div>
             <div className="flex items-center gap-4">
               <div 
                 onClick={() => changeMethod()} 
-                className="flex flex-col px-5 py-1 rounded-full border-[1px] border-[#26c3ff] text-[#26c3ff] font-semibold cursor-pointer hover:shadow-sm hover:shadow-[#26c3ff] relative group"
+                className="flex flex-col px-5 py-1 text-sm text-white cursor-pointer hover:shadow-sm hover:shadow-white relative group border-r-[1px] border-r-white"
               >
                 {swapState ? 
-                  `Your dust tokens section (${tokenCounts.nonZero} tokens)` : 
-                  `Your useless tokens section (${tokenCounts.zero} tokens)`
+                  `Dust tokens section (${tokenCounts.nonZero} tokens)` : 
+                  `Useless tokens section (${tokenCounts.zero} tokens)`
                 }
                 {/* Tooltip */}
-                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-[#0f1f1b] text-[#26c3ff] text-xs rounded border border-[#26c3ff] opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap pointer-events-none">
+                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-black text-white text-xs rounded border border-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap pointer-events-none">
                   {swapState ? 
                     "Click to check your useless (0) token list" : 
                     "Click to check your dust token list"
                   }
-                  <div className="absolute left-1/2 -translate-x-1/2 top-full -mt-1 border-l-4 border-r-4 border-t-4 border-t-[#0f1f1b] border-l-transparent border-r-transparent"></div>
+                  <div className="absolute left-1/2 -translate-x-1/2 top-full -mt-1 border-l-4 border-r-4 border-t-4 border-t-black border-l-transparent border-r-transparent"></div>
                 </div>
               </div>
               <button
                 onClick={(e) => refreshTokenList()}
                 disabled={isRefreshing}
-                className={`p-2 rounded-full border-[1px] border-[#26c3ff] text-[#26c3ff] hover:shadow-sm hover:shadow-[#26c3ff] transition-all ${isRefreshing ? 'opacity-50' : ''} relative group`}
+                className={`p-1 rounded-full border-[1px] border-white text-white hover:shadow-sm hover:shadow-white transition-all ${isRefreshing ? 'opacity-50' : ''} relative group`}
               >
-                <IoMdRefresh className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <IoMdRefresh className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
                 {/* Tooltip */}
-                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-[#0f1f1b] text-[#26c3ff] text-xs rounded border border-[#26c3ff] opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap pointer-events-none">
+                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-black text-white text-xs rounded border border-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap pointer-events-none">
                   Refresh token list
-                  <div className="absolute left-1/2 -translate-x-1/2 top-full -mt-1 border-l-4 border-r-4 border-t-4 border-t-[#0f1f1b] border-l-transparent border-r-transparent"></div>
+                  <div className="absolute left-1/2 -translate-x-1/2 top-full -mt-1 border-l-4 border-r-4 border-t-4 border-t-black border-l-transparent border-r-transparent"></div>
                 </div>
               </button>
             </div>
@@ -1350,22 +1370,43 @@ export default function Home() {
           <div className="w-full flex flex-col px-2">
             <div className="w-full h-[400px] px-4 relative object-cover overflow-hidden overflow-y-scroll">
               <div className="relative overflow-x-auto shadow-md sm:rounded-lg">
-                {tokenList?.length < 1 ? (
-                  <div className="h-[360px] flex flex-col justify-center items-center text-[#26c3ff] text-xl font-bold px-4">
-                    No tokens to {swapState ? "Swap" : "Remove"}
-                  </div>
-                ) : (
-                  <>
-                  <table className="w-full max-h-[360px] text-sm text-left rtl:text-right text-blue-100 dark:text-blue-100 object-cover overflow-hidden overflow-y-scroll">
-                    <thead className="text-xs text-white uppercase bg-[#26c3ff]">
+                {textLoadingState ? (
+                  <table className="w-full text-sm text-left rtl:text-right text-white dark:text-white">
+                    <thead>
                       <tr>
                         <th scope="col" className="p-4">
                           <div className="flex items-center">
                             <input
-                              id="checkbox-all"
                               type="checkbox"
-                              className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 dark:focus:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600 cursor-pointer"
-                              checked={allSelectedFlag === true} // Fully selected state
+                              disabled
+                              className="w-4 h-4 text-white bg-gray-100 border-gray-300 rounded focus:ring-white/50 dark:focus:ring-white/50 dark:ring-offset-gray-800 dark:focus:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+                            />
+                          </div>
+                        </th>
+                        <th scope="col" className="px-6 py-3">Token</th>
+                        <th scope="col" className="px-6 py-3">Balance</th>
+                        <th scope="col" className="px-6 py-3">$ Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <TokenListSkeleton />
+                    </tbody>
+                  </table>
+                ) : tokenList?.length < 1 ? (
+                  <div className="h-[360px] flex flex-col justify-center items-center text-white text-xl font-bold px-4">
+                    No tokens to {swapState ? "Swap" : "Remove"}
+                  </div>
+                ) : (
+                  <>
+                  <table className="w-full max-h-[360px] text-sm text-left rtl:text-right text-white dark:text-white object-cover overflow-hidden overflow-y-scroll">
+                    <thead>
+                      <tr>
+                        <th scope="col" className="p-4">
+                          <div className="flex items-center">
+                            <input
+                              type="checkbox"
+                              className="w-4 h-4 text-white bg-gray-100 border-gray-300 rounded focus:ring-white/50 dark:focus:ring-white/50 dark:ring-offset-gray-800 dark:focus:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600 cursor-pointer"
+                              checked={allSelectedFlag === true}
                               onChange={(e) => {
                                 handleAllSelectedCheckBox();
                               }}
@@ -1373,27 +1414,26 @@ export default function Home() {
                           </div>
                         </th>
                         <th scope="col" className="px-6 py-3">
-                            Token name
+                          Token
                         </th>
                         <th scope="col" className="px-6 py-3">
-                            Balance
+                          Balance
                         </th>
                         <th scope="col" className="px-6 py-3">
-                            $ Value
+                          $ Value
                         </th>
-
                       </tr>
                     </thead>
                     <tbody>
                       {tokenList?.length === 1 &&
-                        <tr className="bg-blue-500 border-b border-blue-400 cursor-pointer">
+                        <tr className="bg-gray-800 border-b border-gray-700 cursor-pointer">
                           <td className="w-4 p-4">
                             <div className="flex items-center">
                               <input
                                 id="checkbox-table-1"
                                 type="checkbox"
-                                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 dark:focus:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
-                                checked={allSelectedFlag === true} // Fully selected state
+                                className="w-4 h-4 text-white bg-gray-100 border-gray-300 rounded focus:ring-white/50 dark:focus:ring-white/50 dark:ring-offset-gray-800 dark:focus:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+                                checked={allSelectedFlag === true}
                                 onChange={() => updateCheckState(tokenList[0].id, tokenList[0].balance, tokenList[0].symbol, tokenList[0].balance * tokenList[0].price)}
                               />
                             </div>
@@ -1407,19 +1447,18 @@ export default function Home() {
                           <td className="px-6 py-4">
                             ${(Number(tokenList[0].price * tokenList[0].balance)).toFixed(6)}
                           </td>
-
                         </tr>
                       }
                       {tokenList?.length > 1 &&
                         tokenList?.map((item: any, index: number) => {
                           return (
-                            <tr key={index} className="bg-blue-500 border-b border-blue-400">
+                            <tr key={index} className="bg-gray-800 border-b border-gray-700 cursor-pointer">
                               <td className="w-4 p-4">
                                 <div className="flex items-center">
                                   <input
                                     id="checkbox-table-1"
                                     type="checkbox"
-                                    className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 dark:focus:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+                                    className="w-4 h-4 text-white bg-gray-100 border-gray-300 rounded focus:ring-white/50 dark:focus:ring-white/50 dark:ring-offset-gray-800 dark:focus:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
                                     checked={selectedTokenList.some((token: any) => token.id === item.id)}
                                     onChange={() => {
                                       updateCheckState(item.id, item.balance, item.symbol, item.balance * item.price);
@@ -1436,14 +1475,13 @@ export default function Home() {
                               <td className="px-6 py-4">
                                 ${(Number(item.price * item.balance)).toFixed(6)}
                               </td>
-
                             </tr>
                           )
                         })}
                     </tbody>
                   </table>
                     {tokenList.length > MAX_TOKENS_PER_BATCH && (
-                      <div className="text-[#26c3ff] text-sm mt-2 px-4">
+                      <div className="text-white text-sm mt-2 px-4">
                         * Maximum {MAX_TOKENS_PER_BATCH} tokens can be processed at once
                       </div>
                     )}
@@ -1471,8 +1509,8 @@ export default function Home() {
                       }}
                       className={`${
                         publicKey?.toBase58() !== undefined && selectedTokenList.length > 0
-                          ? "border-[#26c3ff] cursor-pointer text-[#26c3ff] hover:bg-[#26c3ff] hover:text-white" 
-                          : "border-[#1c1d1d] cursor-not-allowed text-[#1c1d1d]"
+                          ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
+                          : "border-gray-800 cursor-not-allowed text-gray-800"
                       } text-base rounded-full border-[1px] font-semibold px-5 py-2 flex items-center gap-2`}
                     >
                       <span>Create ATAs</span>
@@ -1481,7 +1519,7 @@ export default function Home() {
                           ({ataProgress.created + ataProgress.existing}/{ataProgress.total})
                         </span>
                       )}
-            </div>
+                    </div>
                     <div 
                       onClick={() => {
                         if (publicKey?.toBase58() && selectedTokenList.length > 0) {
@@ -1490,20 +1528,20 @@ export default function Home() {
                       }}
                       className={`${
                         publicKey?.toBase58() !== undefined && selectedTokenList.length > 0
-                          ? "border-[#26c3ff] cursor-pointer text-[#26c3ff] hover:bg-[#26c3ff] hover:text-white" 
-                          : "border-[#1c1d1d] cursor-not-allowed text-[#1c1d1d]"
+                          ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
+                          : "border-gray-800 cursor-not-allowed text-gray-800"
                       } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
                     >
                       Transfer Selected
-          </div>
+                    </div>
                   </div>
                 )}
                 <div 
                   onClick={() => changeToken()} 
                   className={`${
                     publicKey?.toBase58() !== undefined 
-                      ? "border-[#26c3ff] cursor-pointer text-[#26c3ff] hover:bg-[#26c3ff] hover:text-white" 
-                      : "border-[#1c1d1d] cursor-not-allowed text-[#1c1d1d]"
+                      ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
+                      : "border-gray-800 cursor-not-allowed text-gray-800"
                   } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
                 >
                   Reload my SOL
@@ -1515,8 +1553,8 @@ export default function Home() {
                 onClick={() => changeToken()} 
                 className={`${
                   publicKey?.toBase58() !== undefined 
-                    ? "border-[#26c3ff] cursor-pointer text-[#26c3ff] hover:bg-[#26c3ff] hover:text-white" 
-                      : "border-[#1c1d1d] cursor-not-allowed text-[#1c1d1d]"
+                    ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
+                      : "border-gray-800 cursor-not-allowed text-gray-800"
                   } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
               >
                 Autoswap & Reload my SOL
@@ -1533,7 +1571,7 @@ export default function Home() {
             <div className="w-full max-w-4xl mx-auto mt-2">
               <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
                 <div 
-                  className="bg-[#26c3ff] h-2.5 rounded-full transition-all duration-300" 
+                  className="bg-white h-2.5 rounded-full transition-all duration-300" 
                   style={{ width: `${loadingProgress}%` }}
                 />
               </div>
@@ -1543,16 +1581,28 @@ export default function Home() {
       </div>
       
       {/* Footer - now properly centered below main content */}
-      <div className="w-full text-center text-[#26c3ff] text-sm mt-4 opacity-80">
+      <div className="w-full text-center text-white text-sm mt-4 opacity-80">
         <p>Created with love by <a 
-          href="https://x.com/y_techies_guy" 
+          href="https://t.me/+qIpGWaw6bXwzMWVl" 
           target="_blank" 
           rel="noopener noreferrer"
-          className="hover:text-white transition-colors"
-        >@y_techies_guy</a></p>
-        <p className="text-xs mt-1">Kindly DM for any questions, collaboration or opportunity</p>
+          className="hover:text-gray-300 transition-colors"
+        >@reload_sol team</a></p>
+        <p className="text-xs mt-1">Kindly DM <a 
+          href="https://t.me/mousye_mousye" 
+          target="_blank" 
+          rel="noopener noreferrer"
+          className="hover:text-gray-300 transition-colors"
+        >@mousye_mousye</a> for any questions, collaboration or opportunity</p>
         <p className="text-xs mt-1">Happy degening! 🚀</p>
       </div>
+      <PointsPopup
+        isOpen={showPopup}
+        onClose={handleClosePopup}
+        points={points}
+        tokenCount={tokenCount}
+        walletAddress={publicKey?.toBase58() || ''}
+      />
     </div>
   );
 };

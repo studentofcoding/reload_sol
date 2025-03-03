@@ -1,12 +1,21 @@
 import type { Config } from "tailwindcss";
+import tailwindcssAnimate from "tailwindcss-animate";
 
 const config: Config = {
+  darkMode: "class",
   content: [
     "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
+    container: {
+      center: true,
+      padding: "2rem",
+      screens: {
+        "2xl": "1400px",
+      },
+    },
     screens: {
       '4xs': '280px',
       // => @media (min-width: 280px) { ... }
@@ -41,18 +50,52 @@ const config: Config = {
     },
     extend: {
       colors: {
+        border: "hsl(var(--border))",
+        input: "hsl(var(--input))",
+        ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
         primary: {
-          100: "#E4F5F2",
-          200: "#10A678",
-          300: "#2A896B",
-          400: "#5FBB9E ",
-          500: "#435854",
-          600: "#34554C",
-          700: "#071B17",
+          DEFAULT: "hsl(var(--primary))",
+          foreground: "hsl(var(--primary-foreground))",
+          100: "#FFFFFF",
+          200: "#F5F5F5",
+          300: "#E5E5E5",
+          400: "#D4D4D4",
+          500: "#737373",
+          600: "#404040",
+          700: "#171717",
         },
         secondary: {
-          100: "#507A6E",
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
+          100: "#A3A3A3",
         },
+        destructive: {
+          DEFAULT: "hsl(var(--destructive))",
+          foreground: "hsl(var(--destructive-foreground))",
+        },
+        muted: {
+          DEFAULT: "hsl(var(--muted))",
+          foreground: "hsl(var(--muted-foreground))",
+        },
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        card: {
+          DEFAULT: "hsl(var(--card))",
+          foreground: "hsl(var(--card-foreground))",
+        },
+      },
+      borderRadius: {
+        lg: "var(--radius)",
+        md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
       },
       backgroundImage: {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",
@@ -60,13 +103,47 @@ const config: Config = {
           "conic-gradient(from 180deg at 50% 50%, var(--tw-gradient-stops))",
       },
       boxShadow: {
-        "btn-inner": "0px 0px 2px 2px #5FBB9E inset",
-        box: "6px -6px 44px 0px rgba(35, 68, 58, 0.20) inset",
-        btn: "4px 4px 21px 0px rgba(7, 30, 26, 0.50) inset",
-        deposit: "0px -6px 22px 2px #89FFD9 inset",
+        "btn-inner": "0px 0px 2px 2px rgba(255, 255, 255, 0.1) inset",
+        box: "6px -6px 44px 0px rgba(255, 255, 255, 0.05) inset",
+        btn: "4px 4px 21px 0px rgba(255, 255, 255, 0.1) inset",
+        deposit: "0px -6px 22px 2px rgba(255, 255, 255, 0.1) inset",
+      },
+      keyframes: {
+        "accordion-down": {
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
+        },
+        "accordion-up": {
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
+        },
+        fadeIn: {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
+        slideUp: {
+          from: { transform: "translateY(20px)", opacity: "0" },
+          to: { transform: "translateY(0)", opacity: "1" },
+        },
+        glow: {
+          "0%, 100%": { filter: "brightness(1)" },
+          "50%": { filter: "brightness(1.2)" },
+        },
+        bounce: {
+          "0%, 100%": { transform: "translateY(0)" },
+          "50%": { transform: "translateY(-20px)" },
+        },
+      },
+      animation: {
+        "accordion-down": "accordion-down 0.2s ease-out",
+        "accordion-up": "accordion-up 0.2s ease-out",
+        "fadeIn": "fadeIn 0.3s ease-out",
+        "slideUp": "slideUp 0.3s ease-out",
+        "glow": "glow 2s infinite",
+        "bounce": "bounce 5s ease-in-out infinite",
       },
     },
   },
-  plugins: [],
+  plugins: [tailwindcssAnimate],
 };
 export default config;

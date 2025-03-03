@@ -1,0 +1,289 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base Styles */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 0%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 0%;
+ 
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 0%;
+ 
+    --primary: 0 0% 0%;
+    --primary-foreground: 0 0% 100%;
+ 
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 0%;
+ 
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 45%;
+ 
+    --accent: 0 0% 96%;
+    --accent-foreground: 0 0% 0%;
+ 
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 90%;
+    --input: 0 0% 90%;
+    --ring: 0 0% 0%;
+ 
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
+ 
+    --card: 0 0% 0%;
+    --card-foreground: 0 0% 100%;
+ 
+    --popover: 0 0% 0%;
+    --popover-foreground: 0 0% 100%;
+ 
+    --primary: 0 0% 100%;
+    --primary-foreground: 0 0% 0%;
+ 
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 100%;
+ 
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 65%;
+ 
+    --accent: 0 0% 15%;
+    --accent-foreground: 0 0% 100%;
+ 
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 0 0% 100%;
+ 
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 0 0% 100%;
+  }
+
+  body {
+    @apply bg-black text-white antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-bold;
+  }
+}
+
+/* Custom Components */
+@layer components {
+  .container {
+    @apply w-full mx-auto max-w-[1440px] px-4;
+  }
+
+  /* Card Styles */
+  .glass-card {
+    @apply relative bg-gradient-to-br from-zinc-900 to-neutral-900 
+           rounded-2xl border border-white/10 shadow-xl
+           backdrop-blur-sm;
+  }
+
+  .glass-card::before {
+    content: '';
+    @apply absolute inset-0 bg-gradient-radial 
+           from-white/5 via-white/10 to-transparent 
+           rounded-2xl animate-pulse;
+  }
+
+  /* Button Styles */
+  .primary-button {
+    @apply flex items-center justify-center gap-2
+           px-6 py-3 rounded-full font-medium
+           bg-gradient-to-r from-white to-gray-200
+           hover:from-gray-200 hover:to-white
+           text-black
+           transform transition-all duration-300
+           hover:scale-105 hover:shadow-[0_0_20px_rgba(255,255,255,0.2)]
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .secondary-button {
+    @apply flex items-center justify-center gap-2
+           px-6 py-3 rounded-full font-medium
+           border border-white/30 text-white
+           hover:border-white/50 hover:text-white/90
+           hover:shadow-[0_0_15px_rgba(255,255,255,0.1)]
+           transform transition-all duration-300;
+  }
+
+  /* Input Styles */
+  .glass-input {
+    @apply bg-black/30 border border-white/10 rounded-xl
+           px-4 py-2 text-white placeholder-white/50
+           focus:outline-none focus:border-white/50
+           focus:ring-2 focus:ring-white/20;
+  }
+
+  /* Table Styles */
+  .elegant-table {
+    @apply w-full border-collapse;
+  }
+
+  .elegant-table th {
+    @apply px-4 py-3 text-left font-bold
+           text-white/90 border-b border-white/10;
+  }
+
+  .elegant-table td {
+    @apply px-4 py-3 border-b border-white/5;
+  }
+
+  .elegant-table tr:hover {
+    @apply bg-white/5;
+  }
+
+  /* Stats Card */
+  .stats-card {
+    @apply glass-card p-6 flex flex-col gap-2;
+  }
+
+  .stats-card-title {
+    @apply text-white/90 text-sm font-medium;
+  }
+
+  .stats-card-value {
+    @apply text-2xl font-bold
+           text-transparent bg-clip-text
+           bg-gradient-to-r from-white to-gray-300;
+  }
+
+  /* Social Buttons */
+  .social-button {
+    @apply flex items-center space-x-2 px-6 py-3 rounded-full 
+           transition-all duration-300 transform hover:scale-105
+           text-white font-medium shadow-lg;
+  }
+
+  .twitter-button {
+    @apply bg-gradient-to-r from-white/20 to-white/10
+           hover:from-white/30 hover:to-white/20;
+  }
+
+  .telegram-button {
+    @apply bg-gradient-to-r from-white/20 to-white/10
+           hover:from-white/30 hover:to-white/20;
+  }
+
+  /* Download Button */
+  .download-button {
+    @apply text-white hover:text-white/80 transition-colors
+           border border-white/30 hover:border-white/50
+           rounded-full px-6 py-2 text-sm
+           hover:shadow-[0_0_15px_rgba(255,255,255,0.1)];
+  }
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes glow {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.2); }
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-20px); }
+}
+
+/* Animation Classes */
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.animate-slideUp {
+  animation: slideUp 0.3s ease-out;
+}
+
+.animate-glow {
+  animation: glow 2s infinite;
+}
+
+.bounce {
+  animation: bounce 5s ease-in-out infinite;
+}
+
+/* Utility Classes */
+.bg-gradient-radial {
+  background-image: radial-gradient(circle at center,
+    var(--tw-gradient-from) 0%,
+    var(--tw-gradient-via) 50%,
+    var(--tw-gradient-to) 100%
+  );
+}
+
+/* Scrollbar Styles */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+  background: #1a1a1a;
+}
+
+::-webkit-scrollbar-track {
+  background: black;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #ffffff;
+  border-radius: 5px;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Popup Styles */
+.popup-card {
+  animation: slideUp 0.3s ease-out;
+}
+
+.achievement-badge {
+  animation: glow 2s infinite;
+}
+
+.points-display {
+  text-shadow: 0 0 20px rgba(255, 255, 255, 0.5);
+}
+
+/* Reflection effect */
+.reflected-text-wrapper {
+  position: relative;
+}
+
+.reflected-text {
+  display: inline-block;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  opacity: 0.5;
+  transform: scaleY(-1);
+  transform-origin: top;
+  filter: blur(1px);
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.3), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 1), transparent);
+}

@@ -26,6 +26,7 @@ export default function RootLayout({
           <div className="min-h-screen bg-black">
             <Header />
             <Navbar />
+            {children}
           </div>
         </Providers>
         <Toaster position="top-right" />

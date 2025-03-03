@@ -5,7 +5,7 @@ import { Providers } from './providers'
 import Navbar from '@/components/Navbar'
 import Header from '@/components/Header'
 import { Toaster } from 'react-hot-toast'
-
+import Script from 'next/script'
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata = {
@@ -27,6 +27,7 @@ export default function RootLayout({
             <Header />
             <Navbar />
             {children}
+            <Script src="https://scripts.simpleanalyticscdn.com/latest.js"  />
           </div>
         </Providers>
         <Toaster position="top-right" />

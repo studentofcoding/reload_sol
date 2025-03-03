@@ -99,14 +99,7 @@ const PointsPopup: FC<PointsPopupProps> = ({ isOpen, onClose, points, tokenCount
                 className="flex items-center gap-2 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors"
               >
                 <FaTelegram />
-                Join TG
-              </button>
-
-              <button
-                onClick={downloadImage}
-                className="flex items-center gap-2 px-4 py-2 bg-green-700 text-white rounded-lg hover:bg-green-600 transition-colors"
-              >
-                Download
+                Join and support the community
               </button>
             </div>
           </div>

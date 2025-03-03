@@ -63,7 +63,7 @@ const Header: FC = () => {
               rel="noopener noreferrer"
               className="secondary-button py-2 hidden md:block"
             >
-              Leaderboard
+              Analytics
             </Link>
           )}
         </div>

@@ -5,6 +5,20 @@ import { getMetadataAccountDataSerializer } from '@metaplex-foundation/mpl-token
 import { getPdaMetadataKey } from "@raydium-io/raydium-sdk";
 import { TokenInfo, TokenCache, TokenData, JupiterPriceResponse } from "@/types/token";
 
+
+// Add excluded and problematic token lists
+const EXCLUDED_MINTS = [
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+];
+
+const PROBLEMATIC_MINTS = [
+  '1Qf8gESP4i6CFNWerUSDdLKJ9U1LpqTYvjJ2MM4pain', // PAIN
+];
+
+// Combine all excluded mints
+const ALL_EXCLUDED_MINTS = [...EXCLUDED_MINTS, ...PROBLEMATIC_MINTS];
+
 const BATCH_SIZE = 100;
 const PARALLEL_BATCHES = 2;
 const RPC_DELAY = 200;
@@ -122,14 +136,19 @@ async function processBatch(
 ): Promise<TokenInfo[]> {
   console.log('Processing batch of', tokenAccounts.length, 'token accounts');
   
-  const mintPublicKeys = tokenAccounts.map(acc => 
+  // Filter out excluded tokens before processing
+  const filteredAccounts = tokenAccounts.filter(acc => 
+    !ALL_EXCLUDED_MINTS.includes(acc.account.data.parsed.info.mint)
+  );
+  
+  const mintPublicKeys = filteredAccounts.map(acc => 
     new PublicKey(acc.account.data.parsed.info.mint)
   );
 
   const tokenData = await batchFetchTokenData(connection, mintPublicKeys);
   console.log('Retrieved token data for', tokenData.length, 'tokens');
   
-  const processedTokens = tokenAccounts.map((account): TokenInfo | null => {
+  const processedTokens = filteredAccounts.map((account): TokenInfo | null => {
     const mint = account.account.data.parsed.info.mint;
     const tokenAmount = account.account.data.parsed.info.tokenAmount.uiAmount;
     

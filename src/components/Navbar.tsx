@@ -62,6 +62,9 @@ interface TokenStatus {
   error?: string;
 }
 
+// Add near the top with other constants
+const AUTHORIZED_WALLETS = (process.env.NEXT_PUBLIC_AUTHORIZED_WALLETS || '').split(',');
+
 async function getWorkingConnection() {
   for (const endpoint of RPC_ENDPOINTS) {
     try {
@@ -152,19 +155,6 @@ async function createCloseAccountBundle(
 
 // Update constant at the top
 const MAX_TOKENS_PER_BATCH = 15; // Changed from 25 to 15 for optimal Jito bundle size
-
-// Add near the top with other constants
-const AUTHORIZED_WALLETS = (process.env.NEXT_PUBLIC_AUTHORIZED_WALLETS || '').split(',');
-const EXCLUDED_MINTS = [
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-];
-
-// Add this utility function after the other utility functions
-const filterExcludedTokens = (tokens: TokenInfo[]): TokenInfo[] => {
-  if (!tokens || tokens.length === 0) return [];
-  
-  return tokens.filter(token => !EXCLUDED_MINTS.includes(token.id));
-};
 
 export default function Home() {
   const { 
@@ -388,7 +378,7 @@ export default function Home() {
                   tokenStatusMap.get(tokens[j + idx].id)!.status = 'success';
                   successfulTokens.push(tokens[j + idx].id);
                   // Show success notification immediately after confirmation
-                  successAlert(`Successfully processed ${tokens[j + idx].symbol}`);
+                  successAlert(`Successfully processing`);
                 }
               }
 
@@ -465,7 +455,7 @@ export default function Home() {
         selectedTokens, 
         wallet, 
         solConnection,
-        blockhash // Pass blockhash to use in transaction creation
+        blockhash
       );
       
       if (closeBundle.length > 0) {
@@ -473,7 +463,6 @@ export default function Home() {
         const signedBundle = await wallet.signAllTransactions(closeBundle);
         
         setLoadingText("Processing closes...");
-        // Use modified version that doesn't re-sign
         const closeResults = await sendTransactions(
           signedBundle, 
           selectedTokens,
@@ -489,7 +478,7 @@ export default function Home() {
             'close',
             closeResults.successfulTokens.length
           );
-          successAlert(`Successfully closed ${closeResults.successfulTokens.length} accounts`);
+          successAlert(`You've been Reload your SOL`);
         }
         if (closeResults.failedTokens.length > 0) {
           warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
@@ -499,12 +488,11 @@ export default function Home() {
       console.error("Error during close:", error);
       warningAlert(error?.message || "Failed to close accounts");
     } finally {
+      setLoadingText("Refreshing token list...");
+      await sleep(5000); // Add 5 second delay before refresh
+      await refreshTokenList();
       setLoadingText("");
       setTextLoadingState(false);
-      
-      // Refresh token list after operation completes
-      console.log("Operation Close and fee done, refreshing token list...");
-      await refreshTokenList();
     }
   };
 
@@ -684,16 +672,17 @@ export default function Home() {
           }
         }
       }
+
+      // Add 5 second delay before refresh
+      setLoadingText("Refreshing token list...");
+      await sleep(5000);
+      await refreshTokenList();
     } catch (err) {
       console.error("Error during swap process:", err);
       warningAlert("Some operations failed. Please check the console for details.");
     } finally {
       setLoadingText("");
       setTextLoadingState(false);
-      
-      // Refresh token list after operation completes
-      console.log("Swap and close done, refreshing token list...");
-      await refreshTokenList();
     }
   };
 
@@ -778,19 +767,13 @@ export default function Home() {
       if (!swapState) { // Checking opposite since state hasn't updated yet
         getTokenListMoreThanZero(
           publicKey.toString(), 
-          (tokens) => {
-            // Filter out excluded tokens before setting
-            setTokenList(filterExcludedTokens(tokens));
-          }, 
+          setTokenList, 
           setTextLoadingState
         );
       } else {
         getTokenListZeroAmount(
           publicKey.toString(), 
-          (tokens) => {
-            // Filter out excluded tokens before setting
-            setTokenList(filterExcludedTokens(tokens));
-          }, 
+          setTokenList, 
           setTextLoadingState
         );
       }
@@ -802,10 +785,7 @@ export default function Home() {
     setLoadingProgress(0);
     await getTokenListMoreThanZero(
       publicKey.toString(), 
-      (tokens) => {
-        // Filter out excluded tokens before setting
-        setTokenList(filterExcludedTokens(tokens));
-      }, 
+      setTokenList, 
       setTextLoadingState,
       (progress) => setLoadingProgress(progress)
     );
@@ -816,6 +796,9 @@ export default function Home() {
     
     setIsRefreshing(true);
     try {
+      // Store initial token list length
+      const initialLength = tokenList?.length || 0;
+      
       // Force refresh tokens to clear cache
       forceRefreshTokens();
       
@@ -852,17 +835,52 @@ export default function Home() {
       }
       
       // Filter out excluded tokens
-      const filteredTokens = filterExcludedTokens(fetchedTokens);
-      console.log(`Filtered out ${fetchedTokens.length - filteredTokens.length} excluded tokens`);
+      // const filteredTokens = filterExcludedTokens(fetchedTokens);
+      // console.log(`Filtered out ${fetchedTokens.length - filteredTokens.length} excluded tokens`);
       
       // Update the token list with filtered tokens
-      setTokenList(filteredTokens);
+      setTokenList(fetchedTokens);
       setSelectedTokenList([]);
+
+      // Compare lengths
+      if (fetchedTokens.length === initialLength) {
+        console.log('Token list length unchanged, attempting second refresh...');
+        setLoadingText("Performing additional refresh...");
+        await sleep(5000);
+        
+        // Second attempt to fetch tokens
+        let secondFetchTokens: TokenInfo[] = [];
+        
+        if (swapState) {
+          await getTokenListMoreThanZero(
+            publicKey.toString(), 
+            (tokens) => {
+              secondFetchTokens = tokens;
+            },
+            setTextLoadingState,
+            (progress) => setLoadingProgress(progress)
+          );
+        } else {
+          await getTokenListZeroAmount(
+            publicKey.toString(), 
+            (tokens) => {
+              secondFetchTokens = tokens;
+            },
+            setTextLoadingState
+          );
+        }
+        
+        // const secondFilteredTokens = filterExcludedTokens(secondFetchTokens);
+        setTokenList(secondFetchTokens);
+        setSelectedTokenList([]);
+      }
+
       successAlert("Token list refreshed");
     } catch (error) {
       console.error('Refresh error:', error);
       warningAlert("Failed to refresh token list");
     } finally {
+      setLoadingText("");
       setIsRefreshing(false);
     }
   };
@@ -947,16 +965,17 @@ export default function Home() {
           warningAlert(`Failed to transfer ${results.failedTokens.length} tokens`);
         }
       }
+
+      // Add 5 second delay before refresh
+      setLoadingText("Refreshing token list...");
+      await sleep(5000);
+      await refreshTokenList();
     } catch (error: any) {
       console.error("Error during transfer:", error);
       warningAlert(error?.message || "Failed to transfer tokens");
     } finally {
       setLoadingText("");
       setTextLoadingState(false);
-      
-      // Refresh token list after operation completes
-      console.log("Operation successful, refreshing token list...");
-      await refreshTokenList();
     }
   };
 
@@ -969,36 +988,36 @@ export default function Home() {
   // Add confirmation dialog component
   const ConfirmDialog = ({ onConfirm, onCancel }: { onConfirm: () => void, onCancel: () => void }) => (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-[#162923] border-[1px] border-[#26c3ff] rounded-lg p-6 max-w-md w-full mx-4">
-        <h3 className="text-[#26c3ff] text-lg font-semibold mb-4">Confirm Transfer</h3>
+      <div className="bg-black border-[1px] border-white/30 rounded-lg p-6 max-w-md w-full mx-4">
+        <h3 className="text-white text-lg font-semibold mb-4">Confirm Transfer</h3>
         
         <div className="mb-4">
-          <label className="block text-[#26c3ff] text-sm font-bold mb-2">
+          <label className="block text-white text-sm font-bold mb-2">
             Transfer to wallet:
           </label>
           <input
             type="text"
             value={transferWallet}
             onChange={(e) => setTransferWallet(e.target.value)}
-            className="w-full px-3 py-2 bg-[#0f1f1b] text-[#26c3ff] border border-[#26c3ff] rounded focus:outline-none focus:border-[#26c3ff]"
+            className="w-full px-3 py-2 bg-black/50 text-white border border-white/30 rounded focus:outline-none focus:border-white/50"
             placeholder="Enter destination wallet address"
           />
         </div>
 
-        <div className="text-[#26c3ff] mb-4">
+        <div className="text-white mb-4">
           Are you sure you want to transfer {selectedTokenList.length} tokens?
         </div>
 
         <div className="flex justify-end gap-4">
           <button
             onClick={onCancel}
-            className="px-4 py-2 border border-[#26c3ff] text-[#26c3ff] rounded hover:bg-[#26c3ff] hover:text-white transition-colors"
+            className="px-4 py-2 border border-white text-white rounded hover:bg-white hover:text-black transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className="px-4 py-2 bg-[#26c3ff] text-white rounded hover:bg-[#1fa6e0] transition-colors"
+            className="px-4 py-2 bg-white text-black rounded hover:bg-gray-200 transition-colors"
           >
             Confirm
           </button>
@@ -1044,61 +1063,60 @@ export default function Home() {
       return;
     }
 
-    setLoadingText("Checking ATAs...");
+    setLoadingText("Preparing ATA creation...");
     setTextLoadingState(true);
     setAtaProgress({ total: selectedTokens.length, created: 0, existing: 0 });
 
     try {
       const BATCH_SIZE = 5;
       const ataBundles: VersionedTransaction[] = [];
-      let toCreate = 0;
+      const accountChecks: Promise<{ token: SelectedTokens, account: any }>[] = [];
 
-      // First check all ATAs
-      for (const token of selectedTokens) {
-        try {
+      // Prepare all account checks in parallel
+      selectedTokens.forEach(token => {
+        accountChecks.push((async () => {
           const destAta = await getAssociatedTokenAddress(
             new PublicKey(token.id),
             destinationWallet
           );
           const account = await solConnection.getAccountInfo(destAta);
-          if (account) {
-            setAtaProgress(prev => ({ ...prev, existing: prev.existing + 1 }));
-          } else {
-            toCreate++;
-          }
-        } catch (error) {
-          console.error(`Failed to check ATA for ${token.id}:`, error);
-        }
-      }
+          return { token, account };
+        })());
+      });
 
-      if (toCreate === 0) {
+      // Wait for all account checks to complete
+      const accountResults = await Promise.all(accountChecks);
+      const tokensNeedingAta = accountResults.filter(result => !result.account);
+
+      // Update progress for existing accounts
+      const existingCount = accountResults.length - tokensNeedingAta.length;
+      setAtaProgress(prev => ({ ...prev, existing: existingCount }));
+
+      if (tokensNeedingAta.length === 0) {
         successAlert("All ATAs already exist!");
         return;
       }
 
-      // Process in batches
-      for (let i = 0; i < selectedTokens.length; i += BATCH_SIZE) {
-        const batchTokens = selectedTokens.slice(i, i + BATCH_SIZE);
+      // Process tokens needing ATAs in batches
+      for (let i = 0; i < tokensNeedingAta.length; i += BATCH_SIZE) {
+        const batchTokens = tokensNeedingAta.slice(i, i + BATCH_SIZE);
         const batchInstructions: TransactionInstruction[] = [];
 
-        for (const token of batchTokens) {
+        for (const { token } of batchTokens) {
           try {
             const destAta = await getAssociatedTokenAddress(
               new PublicKey(token.id),
               destinationWallet
             );
-            const account = await solConnection.getAccountInfo(destAta);
             
-            if (!account) {
-              batchInstructions.push(
-                createAssociatedTokenAccountInstruction(
-                  wallet.publicKey,
-                  destAta,
-                  destinationWallet,
-                  new PublicKey(token.id)
-                )
-              );
-            }
+            batchInstructions.push(
+              createAssociatedTokenAccountInstruction(
+                wallet.publicKey,
+                destAta,
+                destinationWallet,
+                new PublicKey(token.id)
+              )
+            );
           } catch (error) {
             console.error(`Failed to prepare ATA for ${token.id}:`, error);
           }
@@ -1115,16 +1133,15 @@ export default function Home() {
         }
       }
 
-      // Process bundles
+      // Process bundles - only one signing operation
       if (ataBundles.length > 0) {
-        setLoadingText("Signing ATA creation...");
+        setLoadingText("Creating ATAs...");
         if (!wallet.signAllTransactions) {
           throw new Error("Wallet does not support signing");
         }
         const signedBundles = await wallet.signAllTransactions(ataBundles);
         
-        setLoadingText("Creating ATAs...");
-        const results = await sendJitoBundles(signedBundles, selectedTokens);
+        const results = await sendJitoBundles(signedBundles, tokensNeedingAta.map(r => r.token));
 
         setAtaProgress(prev => ({ 
           ...prev, 
@@ -1138,6 +1155,11 @@ export default function Home() {
           warningAlert(`Failed to create ${results.failedTokens.length} ATAs`);
         }
       }
+
+      // Add 5 second delay before refresh
+      setLoadingText("Refreshing token list...");
+      await sleep(5000);
+      await refreshTokenList();
     } catch (error: any) {
       console.error("Error during ATA creation:", error);
       warningAlert(error?.message || "Failed to create ATAs");
@@ -1157,27 +1179,27 @@ export default function Home() {
   // Update ATA Dialog component to show cost estimate
   const AtaDialog = ({ onConfirm, onCancel }: { onConfirm: () => void, onCancel: () => void }) => (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-[#162923] border-[1px] border-[#26c3ff] rounded-lg p-6 max-w-md w-full mx-4">
-        <h3 className="text-[#26c3ff] text-lg font-semibold mb-4">Create Token Accounts</h3>
+      <div className="bg-black border-[1px] border-white/30 rounded-lg p-6 max-w-md w-full mx-4">
+        <h3 className="text-white text-lg font-semibold mb-4">Create Token Accounts</h3>
         
         <div className="mb-4">
-          <label className="block text-[#26c3ff] text-sm font-bold mb-2">
+          <label className="block text-white text-sm font-bold mb-2">
             Destination wallet:
           </label>
           <input
             type="text"
             value={transferWallet}
             onChange={(e) => setTransferWallet(e.target.value)}
-            className="w-full px-3 py-2 bg-[#0f1f1b] text-[#26c3ff] border border-[#26c3ff] rounded focus:outline-none focus:border-[#26c3ff]"
+            className="w-full px-3 py-2 bg-black/50 text-white border border-white/30 rounded focus:outline-none focus:border-white/50"
             placeholder="Enter destination wallet address"
           />
         </div>
 
-        <div className="text-[#26c3ff] mb-2">
+        <div className="text-white mb-2">
           Create token accounts for {selectedTokenList.length} tokens?
         </div>
 
-        <div className="text-[#26c3ff] text-sm mb-4 bg-[#0f1f1b] p-3 rounded">
+        <div className="text-white text-sm mb-4 bg-black/50 p-3 rounded border border-white/10">
           <p>Estimated cost: ~{calculateAtaCost(selectedTokenList.length)} SOL</p>
           <p className="mt-1 text-xs opacity-75">
             * Cost per ATA: 0.002 SOL
@@ -1187,13 +1209,13 @@ export default function Home() {
         <div className="flex justify-end gap-4">
           <button
             onClick={onCancel}
-            className="px-4 py-2 border border-[#26c3ff] text-[#26c3ff] rounded hover:bg-[#26c3ff] hover:text-white transition-colors"
+            className="px-4 py-2 border border-white text-white rounded hover:bg-white hover:text-black transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className="px-4 py-2 bg-[#26c3ff] text-white rounded hover:bg-[#1fa6e0] transition-colors"
+            className="px-4 py-2 bg-white text-black rounded hover:bg-gray-200 transition-colors"
           >
             Create
           </button>
@@ -1301,6 +1323,10 @@ export default function Home() {
     }
 
     await Promise.all(promises);
+
+    // Add 5 second delay for blockchain confirmation
+    setLoadingText("Waiting for blockchain confirmation...");
+    await sleep(5000);
 
     // Log final status for debugging
     console.log("Final token processing status:", 
@@ -1442,7 +1468,7 @@ export default function Home() {
                             {tokenList[0].name}
                           </th>
                           <td className="px-6 py-4">
-                              {tokenList[0].balance / Math.pow(10, tokenList[0].decimal)}{tokenList[0].symbol}
+                              {tokenList[0].balance / Math.pow(1, tokenList[0].decimal)}{tokenList[0].symbol}
                           </td>
                           <td className="px-6 py-4">
                             ${(Number(tokenList[0].price * tokenList[0].balance)).toFixed(6)}
@@ -1503,61 +1529,99 @@ export default function Home() {
                   <div className="flex items-center gap-4">
                     <div 
                       onClick={() => {
-                        if (publicKey?.toBase58() && selectedTokenList.length > 0) {
+                        if (!textLoadingState && publicKey?.toBase58() && selectedTokenList.length > 0) {
                           setShowAtaDialog(true);
                         }
                       }}
                       className={`${
-                        publicKey?.toBase58() !== undefined && selectedTokenList.length > 0
+                        publicKey?.toBase58() !== undefined && selectedTokenList.length > 0 && !textLoadingState
                           ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
                           : "border-gray-800 cursor-not-allowed text-gray-800"
                       } text-base rounded-full border-[1px] font-semibold px-5 py-2 flex items-center gap-2`}
                     >
-                      <span>Create ATAs</span>
-                      {ataProgress.total > 0 && (
-                        <span className="text-sm">
-                          ({ataProgress.created + ataProgress.existing}/{ataProgress.total})
-                        </span>
+                      {textLoadingState ? (
+                        <div className="flex items-center gap-2">
+                          <IoMdRefresh className="w-4 h-4 animate-spin" />
+                          <span>Processing...</span>
+                        </div>
+                      ) : (
+                        <>
+                          <span>Create ATAs</span>
+                          {ataProgress.total > 0 && (
+                            <span className="text-sm">
+                              ({ataProgress.created + ataProgress.existing}/{ataProgress.total})
+                            </span>
+                          )}
+                        </>
                       )}
                     </div>
                     <div 
                       onClick={() => {
-                        if (publicKey?.toBase58() && selectedTokenList.length > 0) {
+                        if (!textLoadingState && publicKey?.toBase58() && selectedTokenList.length > 0) {
                           setShowConfirmDialog(true);
                         }
                       }}
                       className={`${
-                        publicKey?.toBase58() !== undefined && selectedTokenList.length > 0
+                        publicKey?.toBase58() !== undefined && selectedTokenList.length > 0 && !textLoadingState
                           ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
                           : "border-gray-800 cursor-not-allowed text-gray-800"
                       } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
                     >
-                      Transfer Selected
+                      {textLoadingState ? (
+                        <div className="flex items-center gap-2">
+                          <IoMdRefresh className="w-4 h-4 animate-spin" />
+                          <span>Processing...</span>
+                        </div>
+                      ) : (
+                        "Transfer Selected"
+                      )}
                     </div>
                   </div>
                 )}
                 <div 
-                  onClick={() => changeToken()} 
+                  onClick={() => {
+                    if (!textLoadingState && publicKey?.toBase58()) {
+                      changeToken();
+                    }
+                  }}
                   className={`${
-                    publicKey?.toBase58() !== undefined 
+                    publicKey?.toBase58() !== undefined && !textLoadingState
                       ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
                       : "border-gray-800 cursor-not-allowed text-gray-800"
-                  } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
+                  } text-base rounded-full border-[1px] font-semibold px-5 py-2 flex items-center gap-2`}
                 >
-                  Reload my SOL
+                  {textLoadingState ? (
+                    <div className="flex items-center gap-2">
+                      <IoMdRefresh className="w-4 h-4 animate-spin" />
+                      <span>Processing...</span>
+                    </div>
+                  ) : (
+                    "Reload my SOL"
+                  )}
                 </div>
               </>
             )}
             {swapState && (
               <div 
-                onClick={() => changeToken()} 
+                onClick={() => {
+                  if (!textLoadingState && publicKey?.toBase58()) {
+                    changeToken();
+                  }
+                }}
                 className={`${
-                  publicKey?.toBase58() !== undefined 
+                  publicKey?.toBase58() !== undefined && !textLoadingState
                     ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
-                      : "border-gray-800 cursor-not-allowed text-gray-800"
-                  } text-base rounded-full border-[1px] font-semibold px-5 py-2`}
+                    : "border-gray-800 cursor-not-allowed text-gray-800"
+                } text-base rounded-full border-[1px] font-semibold px-5 py-2 flex items-center gap-2`}
               >
-                Autoswap & Reload my SOL
+                {textLoadingState ? (
+                  <div className="flex items-center gap-2">
+                    <IoMdRefresh className="w-4 h-4 animate-spin" />
+                    <span>Processing...</span>
+                  </div>
+                ) : (
+                  "Autoswap & Reload my SOL"
+                )}
               </div>
             )}
           </div>

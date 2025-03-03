@@ -8,6 +8,7 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { isDevWallet } from "@/config/devWallets";
 import { FaCoins } from 'react-icons/fa';
 import { supabase } from '@/utils/supabase';
+import { fetchWalletStats } from '@/utils/stats';
 
 const Header: FC = () => {
   const { publicKey } = useWallet();
@@ -16,34 +17,17 @@ const Header: FC = () => {
   const [points, setPoints] = useState(0);
 
   useEffect(() => {
-    if (publicKey) {
-      fetchWalletStats();
-    } else {
-      setPoints(0);
-    }
-  }, [publicKey]);
-
-  const fetchWalletStats = async () => {
-    if (!publicKey) return;
-    const walletAddress = publicKey.toBase58();
-
-    try {
-      const { data, error } = await supabase
-        .from('token_operations')
-        .select('swap_count, close_count')
-        .eq('wallet_address', walletAddress)
-        .single();
-
-      if (error) throw error;
-
-      if (data) {
-        const totalTokens = (data.swap_count || 0) + (data.close_count || 0);
-        setPoints(totalTokens * 16); // Calculate points (16 points per token)
+    const updateStats = async () => {
+      if (publicKey) {
+        const stats = await fetchWalletStats(publicKey.toBase58());
+        setPoints(stats.points);
+      } else {
+        setPoints(0);
       }
-    } catch (error) {
-      console.error('Error fetching wallet stats:', error);
-    }
-  };
+    };
+    
+    updateStats();
+  }, [publicKey]);
 
   return (
     <header className="w-full border-b border-white/30 backdrop-blur-sm bg-black/80 relative z-40">

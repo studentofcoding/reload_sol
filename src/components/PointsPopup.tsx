@@ -10,19 +10,36 @@ interface PointsPopupProps {
   points: number;
   tokenCount: number;
   walletAddress: string;
+  userActions: {
+    hasSharedTwitter: boolean;
+    hasJoinedTelegram: boolean;
+  };
+  onTwitterShare: () => void;
+  onTelegramJoin: () => void;
 }
 
-const PointsPopup: FC<PointsPopupProps> = ({ isOpen, onClose, points, tokenCount, walletAddress }) => {
+const PointsPopup: FC<PointsPopupProps> = ({ 
+  isOpen, 
+  onClose, 
+  points, 
+  tokenCount, 
+  walletAddress,
+  userActions,
+  onTwitterShare,
+  onTelegramJoin
+}) => {
   const popupRef = useRef<HTMLDivElement>(null);
 
   const shareToTwitter = () => {
-    const url = 'https://bit.ly/reloadsol'; // Replace with your actual website
+    const url = 'https://bit.ly/reloadsol';
     const text = `🎉 Thanks for being alpha user of @reloadsol. You earned ${points} points, Join the community below! 🚀`;
     window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`);
+    onTwitterShare();
   };
 
   const joinTGCommunity = () => {
     window.open('https://t.me/+qIpGWaw6bXwzMWVl', '_blank');
+    onTelegramJoin();
   };
 
   const downloadImage = async () => {
@@ -88,18 +105,26 @@ const PointsPopup: FC<PointsPopupProps> = ({ isOpen, onClose, points, tokenCount
             <div className="flex justify-center gap-4 mt-8">
               <button
                 onClick={shareToTwitter}
-                className="flex items-center gap-2 px-4 py-2 bg-[#1DA1F2] text-white rounded-lg hover:bg-[#1a8cd8] transition-colors"
+                disabled={userActions.hasSharedTwitter}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors
+                  ${userActions.hasSharedTwitter 
+                    ? 'bg-gray-700 text-gray-400 cursor-not-allowed' 
+                    : 'bg-[#1DA1F2] text-white hover:bg-[#1a8cd8]'}`}
               >
                 <FaTwitter />
-                Share
+                {userActions.hasSharedTwitter ? 'Shared' : 'Share'}
               </button>
               
               <button
                 onClick={joinTGCommunity}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors"
+                disabled={userActions.hasJoinedTelegram}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors
+                  ${userActions.hasJoinedTelegram
+                    ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                    : 'bg-gray-700 text-white hover:bg-gray-600'}`}
               >
                 <FaTelegram />
-                Join and support the community
+                {userActions.hasJoinedTelegram ? 'Joined' : 'Join and support the community'}
               </button>
             </div>
           </div>

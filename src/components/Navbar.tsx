@@ -25,6 +25,7 @@ import { TokenInfo } from "@/types/token";
 import { cacheOperation, syncOperationsToSupabase, supabase, setupOperationSync } from '@/utils/supabase';
 import TokenListSkeleton from './TokenListSkeleton';
 import PointsPopup from './PointsPopup';
+import { fetchWalletStats } from '@/utils/stats';
 
 const SLIPPAGE = 20;
 
@@ -64,6 +65,11 @@ interface TokenStatus {
 
 // Add near the top with other constants
 const AUTHORIZED_WALLETS = (process.env.NEXT_PUBLIC_AUTHORIZED_WALLETS || '').split(',');
+
+interface UserActions {
+  hasSharedTwitter: boolean;
+  hasJoinedTelegram: boolean;
+}
 
 async function getWorkingConnection() {
   for (const endpoint of RPC_ENDPOINTS) {
@@ -189,9 +195,14 @@ export default function Home() {
     existing: 0
   });
   const [showAtaDialog, setShowAtaDialog] = useState(false);
-  const [showPopup, setShowPopup] = useState(true);
+  const [showPopup, setShowPopup] = useState(false);
+  const [walletLoaded, setWalletLoaded] = useState(false);
   const [points, setPoints] = useState(0);
   const [tokenCount, setTokenCount] = useState(0);
+  const [userActions, setUserActions] = useState<UserActions>({
+    hasSharedTwitter: false,
+    hasJoinedTelegram: false
+  });
 
   useEffect(() => {
     // Initialize connection
@@ -244,35 +255,57 @@ export default function Home() {
 
   useEffect(() => {
     if (publicKey) {
-      fetchWalletStats();
+      setWalletLoaded(true);
+      // Only show popup after wallet is loaded
+      setShowPopup(true);
     } else {
+      setWalletLoaded(false);
+      setShowPopup(false);
       setPoints(0);
       setTokenCount(0);
     }
   }, [publicKey]);
 
-  const fetchWalletStats = async () => {
-    if (!publicKey) return;
-    const walletAddress = publicKey.toBase58();
-
-    try {
-      const { data, error } = await supabase
-        .from('token_operations')
-        .select('swap_count, close_count')
-        .eq('wallet_address', walletAddress)
-        .single();
-
-      if (error) throw error;
-
-      if (data) {
-        const totalTokens = (data.swap_count || 0) + (data.close_count || 0);
-        setTokenCount(totalTokens);
-        setPoints(totalTokens * 16); // Calculate points (16 points per token)
+  useEffect(() => {
+    const updateStats = async () => {
+      if (publicKey && walletLoaded) {
+        const stats = await fetchWalletStats(publicKey.toBase58());
+        setPoints(stats.points);
+        setTokenCount(stats.tokenCount);
       }
-    } catch (error) {
-      console.error('Error fetching wallet stats:', error);
+    };
+    
+    updateStats();
+  }, [publicKey, walletLoaded]);
+
+  useEffect(() => {
+    if (publicKey) {
+      const storedActions = localStorage.getItem(`userActions_${publicKey.toString()}`);
+      if (storedActions) {
+        setUserActions(JSON.parse(storedActions));
+      }
     }
-  };
+  }, [publicKey]);
+
+  useEffect(() => {
+    if (publicKey) {
+      setWalletLoaded(true);
+      // Only show popup if either action is incomplete
+      setShowPopup(true);
+      const storedActions = localStorage.getItem(`userActions_${publicKey.toString()}`);
+      if (storedActions) {
+        const actions = JSON.parse(storedActions);
+        if (actions.hasSharedTwitter && actions.hasJoinedTelegram) {
+          setShowPopup(false);
+        }
+      }
+    } else {
+      setWalletLoaded(false);
+      setShowPopup(false);
+      setPoints(0);
+      setTokenCount(0);
+    }
+  }, [publicKey]);
 
   const handleClosePopup = () => {
     setShowPopup(false);
@@ -1344,6 +1377,28 @@ export default function Home() {
     };
   }
 
+  const handleTwitterShare = () => {
+    const newActions = { ...userActions, hasSharedTwitter: true };
+    setUserActions(newActions);
+    localStorage.setItem(`userActions_${publicKey?.toString()}`, JSON.stringify(newActions));
+    
+    // If both actions are now complete, close the popup
+    if (newActions.hasJoinedTelegram) {
+      setShowPopup(false);
+    }
+  };
+
+  const handleTelegramJoin = () => {
+    const newActions = { ...userActions, hasJoinedTelegram: true };
+    setUserActions(newActions);
+    localStorage.setItem(`userActions_${publicKey?.toString()}`, JSON.stringify(newActions));
+    
+    // If both actions are now complete, close the popup
+    if (newActions.hasSharedTwitter) {
+      setShowPopup(false);
+    }
+  };
+
   return (
     <div className="pt-10 relative z-30">
       <div className="container mx-auto px-4 py-6">
@@ -1660,13 +1715,18 @@ export default function Home() {
         >@mousye_mousye</a> for any questions, collaboration or opportunity</p>
         <p className="text-xs mt-1">Happy degening! 🚀</p>
       </div>
-      <PointsPopup
-        isOpen={showPopup}
-        onClose={handleClosePopup}
-        points={points}
-        tokenCount={tokenCount}
-        walletAddress={publicKey?.toBase58() || ''}
-      />
+      {walletLoaded && showPopup && (
+        <PointsPopup
+          isOpen={showPopup}
+          onClose={handleClosePopup}
+          points={points}
+          tokenCount={tokenCount}
+          walletAddress={publicKey?.toBase58() || ''}
+          userActions={userActions}
+          onTwitterShare={handleTwitterShare}
+          onTelegramJoin={handleTelegramJoin}
+        />
+      )}
     </div>
   );
 };

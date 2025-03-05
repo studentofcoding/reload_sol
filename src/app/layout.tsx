@@ -6,13 +6,19 @@ import Navbar from '@/components/Navbar'
 import Header from '@/components/Header'
 import { Toaster } from 'react-hot-toast'
 import Script from 'next/script'
+import { headers } from 'next/headers'
+
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata = {
   title: "ReloadSOL",
   description: "Swap all your useless tokens and Reload your SOL",
-  generator: 'v0.dev'
 };
+
+function getReferralFromPath(path: string): string | null {
+  const match = path.match(/@([^/]+)/);
+  return match ? match[1] : null;
+}
 
 export default function RootLayout({
   children,

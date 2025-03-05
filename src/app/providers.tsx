@@ -3,6 +3,7 @@ import React, { ReactNode } from "react";
 import UserContext from "@/contexts/usercontext";
 import { SolanaWalletProvider } from "@/contexts/SolanaWalletProvider";
 import { QueryClientProvider, QueryClient } from "react-query";
+import { ReferralProvider } from '@/contexts/referralContext';
 
 const queryClient = new QueryClient();
 
@@ -40,33 +41,35 @@ export function Providers({ children }: ProvidersProps) {
 
   return (
     <SolanaWalletProvider>
-      <UserContext.Provider value={{ 
-        tokenList, 
-        setTokenList, 
-        loadingState,
-        setLoadingState,
-        updateLoadingState,
-        tokenFilterList, 
-        setTokenFilterList, 
-        selectedTokenList, 
-        setSelectedTokenList, 
-        currentAmount, 
-        setCurrentAmount, 
-        swapTokenList, 
-        setSwapTokenList, 
-        textLoadingState, 
-        setTextLoadingState, 
-        loadingText, 
-        setLoadingText, 
-        tokeBalance, 
-        setTokeBalance, 
-        swapState, 
-        setSwapState 
-      }}>
-        <QueryClientProvider client={queryClient}>
-          {children}
-        </QueryClientProvider>
-      </UserContext.Provider>
+      <ReferralProvider>
+        <UserContext.Provider value={{ 
+          tokenList, 
+          setTokenList, 
+          loadingState,
+          setLoadingState,
+          updateLoadingState,
+          tokenFilterList, 
+          setTokenFilterList, 
+          selectedTokenList, 
+          setSelectedTokenList, 
+          currentAmount, 
+          setCurrentAmount, 
+          swapTokenList, 
+          setSwapTokenList, 
+          textLoadingState, 
+          setTextLoadingState, 
+          loadingText, 
+          setLoadingText, 
+          tokeBalance, 
+          setTokeBalance, 
+          swapState, 
+          setSwapState 
+        }}>
+          <QueryClientProvider client={queryClient}>
+            {children}
+          </QueryClientProvider>
+        </UserContext.Provider>
+      </ReferralProvider>
     </SolanaWalletProvider>
   );
 }

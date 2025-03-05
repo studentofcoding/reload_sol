@@ -26,6 +26,9 @@ import { cacheOperation, syncOperationsToSupabase, supabase, setupOperationSync 
 import TokenListSkeleton from './TokenListSkeleton';
 import PointsPopup from './PointsPopup';
 import { fetchWalletStats } from '@/utils/stats';
+import { useReferral } from '@/contexts/referralContext';
+import { DEFAULT_PLATFORM_FEE, DEFAULT_REFERRAL_FEE } from '@/types/referral';
+import ReloadPopup from './ReloadPopup';
 
 const SLIPPAGE = 20;
 
@@ -48,6 +51,7 @@ interface JitoBundleResult {
 // Add Jito constants at the top
 const JITO_TIP_ACCOUNT = "JitoNbRYYRPQRt1kGCykKhytNgqf1KGmFjVHkCzGxWn"; // Jito's fee account
 const JITO_TIP_LAMPORTS = 100000; // 0.0001 SOL per tx
+const LAMPORTS_PER_SOL = 1000000000;
 
 // Add to interfaces at the top
 interface BundleResults {
@@ -203,6 +207,9 @@ export default function Home() {
     hasSharedTwitter: false,
     hasJoinedTelegram: false
   });
+  const { referralInfo, updateEarnings } = useReferral();
+  const [showReloadPopup, setShowReloadPopup] = useState(false);
+  const [reloadStats, setReloadStats] = useState({ tokenCount: 0, solAmount: 0 });
 
   useEffect(() => {
     // Initialize connection
@@ -470,6 +477,50 @@ export default function Home() {
     };
   }
 
+  const createFeeTransferInstructions = async (
+    amount: number,
+    feePayer: PublicKey
+  ) => {
+    const instructions: TransactionInstruction[] = [];
+    
+    if (referralInfo?.isActive) {
+      const platformAmount = amount * DEFAULT_PLATFORM_FEE;
+      const referralAmount = amount * DEFAULT_REFERRAL_FEE;
+      
+      // Platform fee transfer
+      instructions.push(
+        SystemProgram.transfer({
+          fromPubkey: feePayer,
+          toPubkey: new PublicKey(process.env.NEXT_PUBLIC_JITO_TIP_ACCOUNT!),
+          lamports: platformAmount,
+        })
+      );
+      
+      // Referral fee transfer
+      instructions.push(
+        SystemProgram.transfer({
+          fromPubkey: feePayer,
+          toPubkey: new PublicKey(referralInfo.referrerWallet),
+          lamports: referralAmount,
+        })
+      );
+
+      // Update referrer earnings in database
+      await updateEarnings(referralAmount / LAMPORTS_PER_SOL);
+    } else {
+      // Standard fee transfer
+      instructions.push(
+        SystemProgram.transfer({
+          fromPubkey: feePayer,
+          toPubkey: new PublicKey(process.env.NEXT_PUBLIC_JITO_TIP_ACCOUNT!),
+          lamports: amount,
+        })
+      );
+    }
+    
+    return instructions;
+  };
+
   const CloseAndFee = async (selectedTokens: SelectedTokens[]) => {
     if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
       warningAlert("Please check your wallet connection");
@@ -511,6 +562,13 @@ export default function Home() {
             'close',
             closeResults.successfulTokens.length
           );
+          // Calculate SOL amount and show popup
+          const solAmount = closeResults.successfulTokens.length * 0.001;
+          setReloadStats({
+            tokenCount: closeResults.successfulTokens.length,
+            solAmount
+          });
+          setShowReloadPopup(true);
           successAlert(`You've been Reload your SOL`);
         }
         if (closeResults.failedTokens.length > 0) {
@@ -698,6 +756,12 @@ export default function Home() {
           }, { success: [] as string[], failed: [] as string[] });
 
           if (summary.success.length > 0) {
+            const solAmount = summary.success.length * 0.001;
+            setReloadStats({
+              tokenCount: summary.success.length,
+              solAmount
+            });
+            setShowReloadPopup(true);
             successAlert(`Successfully processed: ${summary.success.join(', ')}`);
           }
           if (summary.failed.length > 0) {
@@ -1727,6 +1791,12 @@ export default function Home() {
           onTelegramJoin={handleTelegramJoin}
         />
       )}
+      <ReloadPopup
+        isOpen={showReloadPopup}
+        onClose={() => setShowReloadPopup(false)}
+        tokenCount={reloadStats.tokenCount}
+        solAmount={reloadStats.solAmount}
+      />
     </div>
   );
 };

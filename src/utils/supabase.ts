@@ -1,17 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-// Add API key to client options
-export const supabase = createClient(supabaseUrl, supabaseKey, {
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    persistSession: false // Since we're only doing anonymous operations
-  },
-  global: {
-    headers: {
-      apikey: supabaseKey
-    }
+    persistSession: true,
+    autoRefreshToken: true,
   }
 });
 

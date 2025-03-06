@@ -26,8 +26,8 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
   const shareToTwitter = () => {
     const url = 'https://reloadsol.xyz';
     const text = isSwap 
-      ? `🎯 Just reloaded ${solAmount.toFixed(3)} SOL (including ${dustValue.toFixed(3)} SOL from dust) on @reloadsol!\n\n💎 Join our community:\nWebsite: ${url}\nTelegram: https://t.me/+qIpGWaw6bXwzMWVl`
-      : `🎯 Just reloaded ${solAmount.toFixed(3)} SOL on @reloadsol!\n\n💎 Join our community:\nWebsite: ${url}\nTelegram: https://t.me/+qIpGWaw6bXwzMWVl`;
+      ? `🎯 Just reloaded my SOL on @reloadsol!\n\n💎 Join our community:\nWebsite: ${url}\nTelegram: https://t.me/+qIpGWaw6bXwzMWVl`
+      : `🎯 Just reloaded my SOL on @reloadsol!\n\n💎 Join our community:\nWebsite: ${url}\nTelegram: https://t.me/+qIpGWaw6bXwzMWVl`;
     window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`);
   };
 
@@ -84,9 +84,9 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
             </h2>
 
             <p className="text-xl text-white/90 mb-4">
-              You&apos;ve successfully reloaded
+              You&apos;ve successfully reloaded, check your wallet
             </p>
-            <div className="text-4xl font-bold text-blue-400 mb-2">
+            {/* <div className="text-4xl font-bold text-blue-400 mb-2">
               {solAmount.toFixed(3)} SOL
             </div>
             
@@ -94,7 +94,7 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
               <p className="text-sm text-white/70 mb-4">
                 Including {dustValue.toFixed(3)} SOL from dust tokens
               </p>
-            )}
+            )} */}
 
             <div className="flex justify-center gap-4 mt-8">
               <button

@@ -483,6 +483,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
 
           // Process signed transactions
           const signatures: SignatureResult[] = [];
+          const processedTokens = new Set<string>();
           await Promise.all(signedBundle.map(async (tx, idx) => {
             try {
               const sig = await solConnection.sendRawTransaction(tx.serialize(), {
@@ -491,7 +492,10 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               });
               
               signatures.push({ sig, tx });
-              tokens[j + idx]?.id && successfulTokens.push(tokens[j + idx].id);
+              if (tokens[j + idx]?.id && !processedTokens.has(tokens[j + idx].id)) {
+                processedTokens.add(tokens[j + idx].id);
+                successfulTokens.push(tokens[j + idx].id);
+              }
 
               // Wait for confirmation and check status
               const confirmation = await solConnection.confirmTransaction({
@@ -504,7 +508,14 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                 console.error(`Transaction failed: ${sig}`, confirmation.value.err);
                 tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
                 tokenStatusMap.get(tokens[j + idx].id)!.error = confirmation.value.err.toString();
-                failedTokens.push(tokens[j + idx].id);
+                // Remove from successful if it failed confirmation
+                const tokenIndex = successfulTokens.indexOf(tokens[j + idx].id);
+                if (tokenIndex > -1) {
+                  successfulTokens.splice(tokenIndex, 1);
+                }
+                if (!failedTokens.includes(tokens[j + idx].id)) {
+                  failedTokens.push(tokens[j + idx].id);
+                }
               } else {
                 // Verify transaction success on chain
                 const txInfo = await solConnection.getTransaction(sig, {
@@ -514,21 +525,35 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                 
                 if (txInfo?.meta?.err) {
                   tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
-                  failedTokens.push(tokens[j + idx].id);
+                  // Remove from successful if it failed on-chain
+                  const tokenIndex = successfulTokens.indexOf(tokens[j + idx].id);
+                  if (tokenIndex > -1) {
+                    successfulTokens.splice(tokenIndex, 1);
+                  }
+                  if (!failedTokens.includes(tokens[j + idx].id)) {
+                    failedTokens.push(tokens[j + idx].id);
+                  }
                 } else {
                   tokenStatusMap.get(tokens[j + idx].id)!.status = 'success';
-                  successfulTokens.push(tokens[j + idx].id);
-                  // Show success notification immediately after confirmation
-                  successAlert(`Successfully processing`);
+                  // Success notification only if we haven't already processed this token
+                  if (!processedTokens.has(tokens[j + idx].id)) {
+                    processedTokens.add(tokens[j + idx].id);
+                    successAlert(`Successfully processing ${tokens[j + idx].symbol}`);
+                  }
                 }
               }
-
-            } catch (error: any) {  // Type as any for now since we need the error message
+            } catch (error: any) {
               console.error(`Transaction failed:`, error);
               tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
               tokenStatusMap.get(tokens[j + idx].id)!.error = error?.message || 'Unknown error';
-              failedTokens.push(tokens[j + idx].id);
-              // Show failure notification with specific error
+              // Remove from successful if it failed
+              const tokenIndex = successfulTokens.indexOf(tokens[j + idx].id);
+              if (tokenIndex > -1) {
+                successfulTokens.splice(tokenIndex, 1);
+              }
+              if (!failedTokens.includes(tokens[j + idx].id)) {
+                failedTokens.push(tokens[j + idx].id);
+              }
               warningAlert(`Failed to process ${tokens[j + idx].symbol}: ${error?.message || 'Unknown error'}`);
             }
           }));
@@ -653,7 +678,8 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           selectedTokens,
           solConnection,
           blockhash,
-          lastValidBlockHeight
+          lastValidBlockHeight,
+          'close'
         );
 
         // Track successful operations
@@ -666,7 +692,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           const solAmount = closeResults.successfulTokens.length * 0.001;
           setReloadStats({
             tokenCount: closeResults.successfulTokens.length,
-            solAmount,
+            solAmount: solAmount,
             isSwap: false,
             dustValue: 0
           });
@@ -698,11 +724,6 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
 
     setLoadingText("Preparing transactions...");
     setTextLoadingState(true);
-
-    // Track token statuses
-    const tokenStatuses = new Map(
-      selectedTokens.map(token => [token.id, { swapComplete: false, closeComplete: false }])
-    );
 
     try {
       // Step 1: Prepare all swap transactions first
@@ -753,16 +774,13 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           }
         } catch (error) {
           console.error(`Failed to prepare swap for ${token.id}:`, error);
-          tokenStatuses.get(token.id)!.swapComplete = false;
         }
       }
 
       // Step 2: Execute swap bundle
       if (swapBundle.length > 0) {
-        // Get latest blockhash for all transactions
         const { blockhash, lastValidBlockHeight } = await solConnection.getLatestBlockhash('confirmed');
         
-        // Update blockhash in all transactions
         const updatedSwapBundle = swapBundle.map(tx => {
           const newTx = new VersionedTransaction(tx.message);
           newTx.message.recentBlockhash = blockhash;
@@ -778,30 +796,23 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           selectedTokens,
           solConnection,
           blockhash,
-          lastValidBlockHeight
+          lastValidBlockHeight,
+          'swap'
         );
-        
+
         // Track successful swaps
         if (swapResults.successfulTokens.length > 0) {
           cacheOperation(
             wallet.publicKey.toString(),
-            'swap',
+            'close',
             swapResults.successfulTokens.length
           );
-        }
 
-        // Update token statuses
-        swapResults.successfulTokens.forEach((tokenId: string) => {
-          tokenStatuses.get(tokenId)!.swapComplete = true;
-        });
-
-        // Handle close accounts immediately after successful swaps
-        if (swapResults.successfulTokens.length > 0) {
+          // Create close bundle for successful swaps
           const tokensToClose = selectedTokens.filter(
             token => swapResults.successfulTokens.includes(token.id)
           );
           
-          // Create close bundle with the same blockhash
           const closeBundle = await createCloseAccountBundle(
             tokensToClose, 
             wallet, 
@@ -809,7 +820,6 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             blockhash
           );
           
-          // Step 4: Execute close bundle
           if (closeBundle.length > 0) {
             setLoadingText("Signing close transactions...");
             const signedCloseBundle = await wallet.signAllTransactions(closeBundle);
@@ -817,62 +827,37 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             setLoadingText("Processing closes...");
             const closeResults = await sendTransactions(
               signedCloseBundle, 
-              selectedTokens.filter(token => tokenStatuses.get(token.id)?.swapComplete),
+              tokensToClose,
               solConnection,
               blockhash,
-              lastValidBlockHeight
+              lastValidBlockHeight,
+              'close'
             );
 
-            // Track successful closes after swap
+            // Track successful operations
             if (closeResults.successfulTokens.length > 0) {
               cacheOperation(
                 wallet.publicKey.toString(),
                 'close',
                 closeResults.successfulTokens.length
               );
+              
+              const baseAmount = closeResults.successfulTokens.length * 0.001;
+              const dustValue = calculateTotalValue(tokenList);
+              const totalAmount = baseAmount + dustValue;
+              
+              setReloadStats({
+                tokenCount: closeResults.successfulTokens.length,
+                solAmount: totalAmount,
+                isSwap: true,
+                dustValue: dustValue
+              });
+              setShowReloadPopup(true);
+              successAlert(`Successfully processed: ${closeResults.successfulTokens.length} tokens`);
             }
-            
-            // Track failed closes after swap
             if (closeResults.failedTokens.length > 0) {
-              cacheOperation(
-                wallet.publicKey.toString(),
-                'close',
-                closeResults.failedTokens.length
-              );
+              warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
             }
-
-            closeResults.successfulTokens.forEach((tokenId: string) => {
-              tokenStatuses.get(tokenId)!.closeComplete = true;
-            });
-          }
-
-          // Final status report
-          const summary = Array.from(tokenStatuses.entries()).reduce((acc, [tokenId, status]) => {
-            const token = selectedTokens.find(t => t.id === tokenId)!;
-            if (status.swapComplete && status.closeComplete) {
-              acc.success.push(token.symbol);
-            } else {
-              acc.failed.push(token.symbol);
-            }
-            return acc;
-          }, { success: [] as string[], failed: [] as string[] });
-
-          if (summary.success.length > 0) {
-            const baseAmount = summary.success.length * 0.001;
-            const dustValue = calculateTotalValue(tokenList);
-            const totalAmount = baseAmount + dustValue;
-            
-            setReloadStats({
-              tokenCount: summary.success.length,
-              solAmount: totalAmount,
-              isSwap: true,
-              dustValue
-            });
-            setShowReloadPopup(true);
-            successAlert(`Successfully processed: ${summary.success.join(', ')}`);
-          }
-          if (summary.failed.length > 0) {
-            warningAlert(`Failed to process: ${summary.failed.join(', ')}`);
           }
         }
       }
@@ -1450,14 +1435,15 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     </div>
   );
 
-  // Add periodic sync - this was accidentally removed
+
   // New helper function that doesn't re-sign transactions
   async function sendTransactions(
     signedTxs: VersionedTransaction[], 
     tokens: SelectedTokens[],
     connection: Connection,
     blockhash: string,
-    lastValidBlockHeight: number
+    lastValidBlockHeight: number,
+    bundleType: 'close' | 'swap' = 'swap'  // default to 'swap' for backward compatibility
   ): Promise<BundleResults> {
     if (!connection) {
       throw new Error("Connection not available");
@@ -1467,6 +1453,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     const successfulTokens: string[] = [];
     const failedTokens: string[] = [];
     const promises = [];
+    const confirmationPromises: Promise<void>[] = [];
 
     const tokenStatusMap = new Map<string, TokenStatus>();
     tokens.forEach(token => {
@@ -1485,7 +1472,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
         try {
           // Process signed transactions
           const signatures: SignatureResult[] = [];
-          await Promise.all(bundleTxs.map(async (tx, idx) => {
+          const sendPromises = bundleTxs.map(async (tx, idx) => {
             try {
               const sig = await connection.sendRawTransaction(tx.serialize(), {
                 skipPreflight: true,
@@ -1493,46 +1480,58 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               });
               
               signatures.push({ sig, tx });
-              tokens[j + idx]?.id && successfulTokens.push(tokens[j + idx].id);
+              
+              // Add confirmation promise to our array
+              const confirmationPromise = (async () => {
+                try {
+                  // Wait for confirmation with longer timeout
+                  const confirmation = await connection.confirmTransaction({
+                    signature: sig,
+                    lastValidBlockHeight,
+                    blockhash
+                  }, 'confirmed');
 
-              // Wait for confirmation and check status
-              const confirmation = await connection.confirmTransaction({
-                signature: sig,
-                lastValidBlockHeight,
-                blockhash
-              });
-
-              if (confirmation.value.err) {
-                console.error(`Transaction failed: ${sig}`, confirmation.value.err);
-                tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
-                tokenStatusMap.get(tokens[j + idx].id)!.error = confirmation.value.err.toString();
-                failedTokens.push(tokens[j + idx].id);
-              } else {
-                // Verify transaction success on chain
-                const txInfo = await connection.getTransaction(sig, {
-                  commitment: 'confirmed',
-                  maxSupportedTransactionVersion: 0
-                });
-                
-                if (txInfo?.meta?.err) {
+                  if (confirmation.value.err) {
+                    console.error(`Transaction failed: ${sig}`, confirmation.value.err);
+                    tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
+                    tokenStatusMap.get(tokens[j + idx].id)!.error = confirmation.value.err.toString();
+                    failedTokens.push(tokens[j + idx].id);
+                  } else {
+                    // Additional verification with getTransaction
+                    const txInfo = await connection.getTransaction(sig, {
+                      commitment: 'confirmed',
+                      maxSupportedTransactionVersion: 0
+                    });
+                    
+                    if (txInfo?.meta?.err) {
+                      tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
+                      failedTokens.push(tokens[j + idx].id);
+                    } else {
+                      tokenStatusMap.get(tokens[j + idx].id)!.status = 'success';
+                      successfulTokens.push(tokens[j + idx].id);
+                      successAlert(`Successfully processed ${tokens[j + idx].symbol}`);
+                    }
+                  }
+                } catch (error: any) {
+                  console.error(`Confirmation failed for ${sig}:`, error);
                   tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
                   failedTokens.push(tokens[j + idx].id);
-                } else {
-                  tokenStatusMap.get(tokens[j + idx].id)!.status = 'success';
-                  successfulTokens.push(tokens[j + idx].id);
-                  // Show success notification immediately after confirmation
-                  successAlert(`Successfully processed ${tokens[j + idx].symbol}`);
                 }
-              }
+              })();
+              
+              confirmationPromises.push(confirmationPromise);
+              
             } catch (error: any) {
               console.error(`Transaction failed:`, error);
               tokenStatusMap.get(tokens[j + idx].id)!.status = 'failed';
               tokenStatusMap.get(tokens[j + idx].id)!.error = error?.message || 'Unknown error';
               failedTokens.push(tokens[j + idx].id);
-              // Show failure notification with specific error
               warningAlert(`Failed to process ${tokens[j + idx].symbol}: ${error?.message || 'Unknown error'}`);
             }
-          }));
+          });
+
+          // Wait for all transactions in this bundle to be sent
+          await Promise.all(sendPromises);
 
           return signatures.length === bundleSize;
         } catch (error) {
@@ -1548,24 +1547,76 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
       promises.push(bundlePromise);
     }
 
-    await Promise.all(promises);
+   // Add this helper function to check for pending tokens
+  const hasPendingTokens = (statusMap: Map<string, TokenStatus>): boolean => {
+    return Array.from(statusMap.values()).some(t => t.status === 'pending');
+  };
 
-    // Add 5 second delay for blockchain confirmation
-    setLoadingText("Waiting for blockchain confirmation...");
-    await sleep(5000);
+  // Wait for all confirmations to complete
+  setLoadingText("Waiting for confirmations...");
 
-    // Log final status for debugging
-    console.log("Final token processing status:", 
-      Array.from(tokenStatusMap.values()).map(t => ({
-        symbol: t.symbol,
-        status: t.status,
-        error: t.error
-      }))
-    );
+  // Process confirmations sequentially
+  for (const confirmationPromise of confirmationPromises) {
+    try {
+      await confirmationPromise;
+      
+      // For Close Account operations, mark all tokens in the bundle as successful
+      // since they are processed together
+      if (bundleType === 'close') {
+        tokens.forEach(token => {
+          if (tokenStatusMap.get(token.id)?.status === 'pending') {
+            tokenStatusMap.set(token.id, {
+              id: token.id,
+              symbol: token.symbol,
+              status: 'success'
+            });
+            successfulTokens.push(token.id);
+          }
+        });
+      }
+    } catch (error: any) {
+      console.error("Confirmation failed:", error);
+      // For Close Account operations, mark all pending tokens as failed
+      if (bundleType === 'close') {
+        tokens.forEach(token => {
+          if (tokenStatusMap.get(token.id)?.status === 'pending') {
+            tokenStatusMap.set(token.id, {
+              id: token.id,
+              symbol: token.symbol,
+              status: 'failed',
+              error: error?.message || 'Failed during bundle confirmation'
+            });
+            failedTokens.push(token.id);
+          }
+        });
+      }
+    }
+  }
+
+  // Final check for any remaining pending tokens
+  let retryCount = 0;
+  while (hasPendingTokens(tokenStatusMap) && retryCount < 3) {
+    console.log("Found pending tokens, waiting additional 1 second...");
+    await sleep(1000);
+    retryCount++;
+  }
+
+  // Log final status for debugging
+  console.log("Final token processing status:", 
+    Array.from(tokenStatusMap.values()).map(t => ({
+      symbol: t.symbol,
+      status: t.status,
+      error: t.error
+    }))
+  );
+
+    // Remove duplicates from arrays
+    const uniqueSuccessfulTokens = Array.from(new Set(successfulTokens));
+    const uniqueFailedTokens = Array.from(new Set(failedTokens));
 
     return {
-      successfulTokens,
-      failedTokens,
+      successfulTokens: uniqueSuccessfulTokens,
+      failedTokens: uniqueFailedTokens,
       failedTransactions
     };
   }

@@ -9,19 +9,25 @@ interface ReloadPopupProps {
   onClose: () => void;
   tokenCount: number;
   solAmount: number;
+  isSwap?: boolean;
+  dustValue?: number;
 }
 
 const ReloadPopup: FC<ReloadPopupProps> = ({ 
   isOpen, 
   onClose, 
   tokenCount,
-  solAmount
+  solAmount,
+  isSwap = false,
+  dustValue = 0
 }) => {
   const popupRef = useRef<HTMLDivElement>(null);
 
   const shareToTwitter = () => {
     const url = 'https://reloadsol.xyz';
-    const text = `🎯 Just reloaded ${solAmount.toFixed(3)} SOL on @reloadsol!\n\n💎 Join our community:\nWebsite: ${url}\nTelegram: https://t.me/+qIpGWaw6bXwzMWVl`;
+    const text = isSwap 
+      ? `🎯 Just reloaded ${solAmount.toFixed(3)} SOL (including ${dustValue.toFixed(3)} SOL from dust) on @reloadsol!\n\n💎 Join our community:\nWebsite: ${url}\nTelegram: https://t.me/+qIpGWaw6bXwzMWVl`
+      : `🎯 Just reloaded ${solAmount.toFixed(3)} SOL on @reloadsol!\n\n💎 Join our community:\nWebsite: ${url}\nTelegram: https://t.me/+qIpGWaw6bXwzMWVl`;
     window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`);
   };
 
@@ -83,6 +89,12 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
             <div className="text-4xl font-bold text-blue-400 mb-2">
               {solAmount.toFixed(3)} SOL
             </div>
+            
+            {isSwap && dustValue > 0 && (
+              <p className="text-sm text-white/70 mb-4">
+                Including {dustValue.toFixed(3)} SOL from dust tokens
+              </p>
+            )}
 
             <div className="flex justify-center gap-4 mt-8">
               <button

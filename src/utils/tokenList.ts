@@ -272,6 +272,7 @@ export async function getTokenListMoreThanZero(
     const allMints = nonZeroAccounts.map(acc => 
       acc.account.data.parsed.info.mint
     );
+
     const prices = await batchFetchPrices(allMints);
 
     const chunks = [];
@@ -286,7 +287,13 @@ export async function getTokenListMoreThanZero(
         batchChunks.map(chunk => processBatch(connection, chunk, prices))
       );
       
-      processedTokens = [...processedTokens, ...batchResults.flat()];
+      // Filter out tokens worth more than $1
+      const filteredBatchResults = batchResults.flat().filter(token => {
+        const tokenValue = token.price * token.balance;
+        return tokenValue < 0.5;
+      });
+      
+      processedTokens = [...processedTokens, ...filteredBatchResults];
       
       const progress = Math.min(
         ((i + PARALLEL_BATCHES) / chunks.length) * 100,

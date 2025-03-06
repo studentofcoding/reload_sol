@@ -29,6 +29,7 @@ import { fetchWalletStats } from '@/utils/stats';
 import { useReferral } from '@/contexts/referralContext';
 import { DEFAULT_PLATFORM_FEE, DEFAULT_REFERRAL_FEE } from '@/types/referral';
 import ReloadPopup from './ReloadPopup';
+import { SOL_PRICE_API } from "@/config";
 
 const SLIPPAGE = 20;
 
@@ -73,6 +74,14 @@ const AUTHORIZED_WALLETS = (process.env.NEXT_PUBLIC_AUTHORIZED_WALLETS || '').sp
 interface UserActions {
   hasSharedTwitter: boolean;
   hasJoinedTelegram: boolean;
+}
+
+// Add this new interface near the top
+interface ReloadStats {
+  tokenCount: number;
+  solAmount: number;
+  isSwap: boolean;
+  dustValue: number;
 }
 
 async function getWorkingConnection() {
@@ -209,7 +218,34 @@ export default function Home() {
   });
   const { referralInfo, updateEarnings } = useReferral();
   const [showReloadPopup, setShowReloadPopup] = useState(false);
-  const [reloadStats, setReloadStats] = useState({ tokenCount: 0, solAmount: 0 });
+  const [reloadStats, setReloadStats] = useState<ReloadStats>({
+    tokenCount: 0,
+    solAmount: 0,
+    isSwap: false,
+    dustValue: 0
+  });
+
+  // Add these at the top of the component
+  const [solPrice, setSolPrice] = useState<number>(0);
+
+  // Add this useEffect to fetch SOL price
+  useEffect(() => {
+    const fetchSolPrice = async () => {
+      try {
+        const response = await fetch(SOL_PRICE_API);
+        const data = await response.json();
+        setSolPrice(data.solana.usd);
+      } catch (error) {
+        console.error('Error fetching SOL price:', error);
+        setSolPrice(0);
+      }
+    };
+
+    fetchSolPrice();
+    // Refresh price every 60 seconds
+    const interval = setInterval(fetchSolPrice, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     // Initialize connection
@@ -313,6 +349,71 @@ export default function Home() {
       setTokenCount(0);
     }
   }, [publicKey]);
+
+  // Add new useEffect for initial state determination
+  useEffect(() => {
+    const initializeTokenState = async () => {
+      if (!publicKey) return;
+      
+      setTextLoadingState(true);
+      try {
+        let zeroTokens = 0;
+        let nonZeroTokens = 0;
+
+        // Get counts of both types of tokens
+        await getTokenListZeroAmount(
+          publicKey.toString(),
+          (tokens) => { zeroTokens = tokens.length },
+          setTextLoadingState
+        );
+
+        await getTokenListMoreThanZero(
+          publicKey.toString(),
+          (tokens) => { nonZeroTokens = tokens.length },
+          setTextLoadingState
+        );
+
+        console.log('Initial token counts:', { zeroTokens, nonZeroTokens });
+
+        // Set initial state based on token availability
+        const shouldBeInSwapState = nonZeroTokens > 0;
+        setSwapState(shouldBeInSwapState);
+
+        // Load the appropriate token list
+        if (shouldBeInSwapState) {
+          await getTokenListMoreThanZero(
+            publicKey.toString(),
+            setTokenList,
+            setTextLoadingState
+          );
+        } else {
+          await getTokenListZeroAmount(
+            publicKey.toString(),
+            setTokenList,
+            setTextLoadingState
+          );
+        }
+
+        // Update token counts state
+        setTokenCounts({ zero: zeroTokens, nonZero: nonZeroTokens });
+      } catch (error) {
+        console.error('Error initializing token state:', error);
+      } finally {
+        setTextLoadingState(false);
+      }
+    };
+
+    initializeTokenState();
+  }, [publicKey]); // Only run when wallet connects/
+  
+  // Update the calculateTotalValue function
+const calculateTotalValue = (tokens: TokenInfo[]) => {
+  if (!tokens || !solPrice || solPrice === 0) return 0;
+  return Number(tokens.reduce((total, token) => {
+    const dollarValue = token.price * token.balance;
+    return total + (dollarValue / solPrice); // Convert to SOL value
+  }, 0).toFixed(4));
+};
 
   const handleClosePopup = () => {
     setShowPopup(false);
@@ -562,11 +663,12 @@ export default function Home() {
             'close',
             closeResults.successfulTokens.length
           );
-          // Calculate SOL amount and show popup
           const solAmount = closeResults.successfulTokens.length * 0.001;
           setReloadStats({
             tokenCount: closeResults.successfulTokens.length,
-            solAmount
+            solAmount,
+            isSwap: false,
+            dustValue: 0
           });
           setShowReloadPopup(true);
           successAlert(`You've been Reload your SOL`);
@@ -756,10 +858,15 @@ export default function Home() {
           }, { success: [] as string[], failed: [] as string[] });
 
           if (summary.success.length > 0) {
-            const solAmount = summary.success.length * 0.001;
+            const baseAmount = summary.success.length * 0.001;
+            const dustValue = calculateTotalValue(tokenList);
+            const totalAmount = baseAmount + dustValue;
+            
             setReloadStats({
               tokenCount: summary.success.length,
-              solAmount
+              solAmount: totalAmount,
+              isSwap: true,
+              dustValue
             });
             setShowReloadPopup(true);
             successAlert(`Successfully processed: ${summary.success.join(', ')}`);
@@ -856,26 +963,74 @@ export default function Home() {
     await getWalletTokeBalance();
   }
 
-  const changeMethod = () => {
-    setSwapState(!swapState);
+  const changeMethod = async () => {
     setSelectedTokenList([]);
-    // No need to force refresh, will use cache if available
+    
     if (publicKey) {
-      if (!swapState) { // Checking opposite since state hasn't updated yet
-        getTokenListMoreThanZero(
-          publicKey.toString(), 
-          setTokenList, 
+      setTextLoadingState(true);
+      try {
+        // Check both lists
+        let zeroTokens = 0;
+        let nonZeroTokens = 0;
+
+        // Get zero amount tokens
+        await getTokenListZeroAmount(
+          publicKey.toString(),
+          (tokens) => { zeroTokens = tokens.length },
           setTextLoadingState
         );
-      } else {
-        getTokenListZeroAmount(
-          publicKey.toString(), 
-          setTokenList, 
+
+        // Get non-zero amount tokens
+        await getTokenListMoreThanZero(
+          publicKey.toString(),
+          (tokens) => { nonZeroTokens = tokens.length },
           setTextLoadingState
         );
+
+        console.log('Token counts:', { zeroTokens, nonZeroTokens, currentState: swapState });
+
+        // If no tokens in current section, switch to the other if it has tokens
+        if (swapState && nonZeroTokens === 0 && zeroTokens > 0) {
+          // Currently in swap (non-zero) but no tokens, switch to zero if available
+          setSwapState(false);
+          await getTokenListZeroAmount(
+            publicKey.toString(),
+            setTokenList,
+            setTextLoadingState
+          );
+        } else if (!swapState && zeroTokens === 0 && nonZeroTokens > 0) {
+          // Currently in zero but no tokens, switch to non-zero if available
+          setSwapState(true);
+          await getTokenListMoreThanZero(
+            publicKey.toString(),
+            setTokenList,
+            setTextLoadingState
+          );
+        } else {
+          // Normal toggle behavior when both lists have tokens
+          const newState = !swapState;
+          setSwapState(newState);
+          if (newState) {
+            await getTokenListMoreThanZero(
+              publicKey.toString(),
+              setTokenList,
+              setTextLoadingState
+            );
+          } else {
+            await getTokenListZeroAmount(
+              publicKey.toString(),
+              setTokenList,
+              setTextLoadingState
+            );
+          }
+        }
+      } catch (error) {
+        console.error('Error changing token list:', error);
+      } finally {
+        setTextLoadingState(false);
       }
     }
-  }
+  };
 
   const updateTokenList = async () => {
     if (!publicKey) return;
@@ -893,84 +1048,58 @@ export default function Home() {
     
     setIsRefreshing(true);
     try {
-      // Store initial token list length
-      const initialLength = tokenList?.length || 0;
-      
       // Force refresh tokens to clear cache
       forceRefreshTokens();
       
       console.log('Refreshing token list with forced cache clear');
 
-      // Log the request parameters
-      console.log('Refresh request params:', {
-        publicKey: publicKey.toString(),
-        swapState,
-        timestamp: new Date().toISOString()
-      });
-
-      let fetchedTokens: TokenInfo[] = [];
+      // Check both lists first
+      let zeroTokens: TokenInfo[] = [];
+      let nonZeroTokens: TokenInfo[] = [];
       
-      if (swapState) {
-        // Get tokens with non-zero balance
-        await getTokenListMoreThanZero(
-          publicKey.toString(), 
-          (tokens) => {
-            fetchedTokens = tokens;
-          },
+      // Get both lists in parallel
+      await Promise.all([
+        getTokenListZeroAmount(
+          publicKey.toString(),
+          (tokens) => { zeroTokens = tokens; },
+          setTextLoadingState
+        ),
+        getTokenListMoreThanZero(
+          publicKey.toString(),
+          (tokens) => { nonZeroTokens = tokens; },
           setTextLoadingState,
           (progress) => setLoadingProgress(progress)
-        );
-      } else {
-        // Get tokens with zero balance
-        await getTokenListZeroAmount(
-          publicKey.toString(), 
-          (tokens) => {
-            fetchedTokens = tokens;
-          },
-          setTextLoadingState
-        );
-      }
-      
-      // Filter out excluded tokens
-      // const filteredTokens = filterExcludedTokens(fetchedTokens);
-      // console.log(`Filtered out ${fetchedTokens.length - filteredTokens.length} excluded tokens`);
-      
-      // Update the token list with filtered tokens
-      setTokenList(fetchedTokens);
-      setSelectedTokenList([]);
+        )
+      ]);
 
-      // Compare lengths
-      if (fetchedTokens.length === initialLength) {
-        console.log('Token list length unchanged, attempting second refresh...');
-        setLoadingText("Performing additional refresh...");
-        await sleep(5000);
-        
-        // Second attempt to fetch tokens
-        let secondFetchTokens: TokenInfo[] = [];
-        
-        if (swapState) {
-          await getTokenListMoreThanZero(
-            publicKey.toString(), 
-            (tokens) => {
-              secondFetchTokens = tokens;
-            },
-            setTextLoadingState,
-            (progress) => setLoadingProgress(progress)
-          );
-        } else {
-          await getTokenListZeroAmount(
-            publicKey.toString(), 
-            (tokens) => {
-              secondFetchTokens = tokens;
-            },
-            setTextLoadingState
-          );
-        }
-        
-        // const secondFilteredTokens = filterExcludedTokens(secondFetchTokens);
-        setTokenList(secondFetchTokens);
-        setSelectedTokenList([]);
+      console.log('Token counts after refresh:', {
+        zeroTokens: zeroTokens.length,
+        nonZeroTokens: nonZeroTokens.length,
+        currentState: swapState
+      });
+
+      // Determine which section to show based on available tokens
+      if (swapState && nonZeroTokens.length === 0 && zeroTokens.length > 0) {
+        // Currently in swap (non-zero) but no tokens, switch to zero if available
+        setSwapState(false);
+        setTokenList(zeroTokens);
+      } else if (!swapState && zeroTokens.length === 0 && nonZeroTokens.length > 0) {
+        // Currently in zero but no tokens, switch to non-zero if available
+        setSwapState(true);
+        setTokenList(nonZeroTokens);
+      } else {
+        // Stay in current section but update the list
+        setTokenList(swapState ? nonZeroTokens : zeroTokens);
       }
+
+      // Update token counts
+      setTokenCounts({
+        zero: zeroTokens.length,
+        nonZero: nonZeroTokens.length
+      });
+
+      // Clear selection
+      setSelectedTokenList([]);
 
       successAlert("Token list refreshed");
     } catch (error) {
@@ -1463,6 +1592,17 @@ export default function Home() {
     }
   };
 
+  // Add this helper function near other UI-related functions
+  const canSwitchSection = (currentState: boolean, zeroCounts: number, nonZeroCounts: number) => {
+    if (currentState) {
+      // In swap/dust state (non-zero), check if there are zero tokens to switch to
+      return zeroCounts > 0;
+    } else {
+      // In useless state (zero), check if there are non-zero tokens to switch to
+      return nonZeroCounts > 0;
+    }
+  };
+
   return (
     <div className="pt-10 relative z-30">
       <div className="container mx-auto px-4 py-6">
@@ -1471,7 +1611,17 @@ export default function Home() {
             <div className="text-white text-md mb-2 sm2:mb-0">
               <div className="relative group">
                 <span className="hover:text-gray-300 transition-colors">
-                 You have around <span className="font-bold">{(tokenList?.length || 0) * 0.001} SOL</span> to reload 🚀
+                  You have around <span className="font-bold">
+                    {swapState ? (
+                      <>
+                        ~{((tokenList?.length || 0) * 0.001) + (calculateTotalValue(tokenList))} SOL
+                      </>
+                    ) : (
+                      <>
+                        {(tokenList?.length || 0) * 0.001} SOL
+                      </>
+                    )}
+                  </span> to reload 🚀
                 </span>
                 <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 px-3 py-2 bg-black text-white text-xs rounded border border-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 w-full">
                   💎 <a href="https://t.me/+qIpGWaw6bXwzMWVl" target="_blank" rel="noopener noreferrer" className="hover:text-gray-300 transition-colors">Join our community here</a> 💎 
@@ -1481,34 +1631,29 @@ export default function Home() {
               </div>
             </div>
             <div className="flex items-center gap-4">
-              <div 
-                onClick={() => changeMethod()} 
-                className="flex flex-col px-5 py-1 text-sm text-white cursor-pointer hover:shadow-sm hover:shadow-white relative group border-r-[1px] border-r-white"
+             <div 
+                onClick={() => {
+                  if (canSwitchSection(swapState, tokenCounts.zero, tokenCounts.nonZero)) {
+                    changeMethod();
+                  }
+                }} 
+                className={`flex flex-col px-5 py-1 text-sm text-white relative group border-r-[1px] border-r-white ${
+                  canSwitchSection(swapState, tokenCounts.zero, tokenCounts.nonZero)
+                    ? "cursor-pointer hover:shadow-sm hover:shadow-white"
+                    : "cursor-not-allowed opacity-50"
+                }`}
               >
                 {swapState ? 
                   `Dust tokens section (${tokenCounts.nonZero} tokens)` : 
                   `Useless tokens section (${tokenCounts.zero} tokens)`
                 }
-                {/* Tooltip */}
-                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-black text-white text-xs rounded border border-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap pointer-events-none">
-                  {swapState ? 
-                    "Click to check your useless (0) token list" : 
-                    "Click to check your dust token list"
-                  }
-                  <div className="absolute left-1/2 -translate-x-1/2 top-full -mt-1 border-l-4 border-r-4 border-t-4 border-t-black border-l-transparent border-r-transparent"></div>
-                </div>
               </div>
-              <button
+              <button 
                 onClick={(e) => refreshTokenList()}
                 disabled={isRefreshing}
                 className={`p-1 rounded-full border-[1px] border-white text-white hover:shadow-sm hover:shadow-white transition-all ${isRefreshing ? 'opacity-50' : ''} relative group`}
               >
                 <IoMdRefresh className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-                {/* Tooltip */}
-                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-black text-white text-xs rounded border border-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap pointer-events-none">
-                  Refresh token list
-                  <div className="absolute left-1/2 -translate-x-1/2 top-full -mt-1 border-l-4 border-r-4 border-t-4 border-t-black border-l-transparent border-r-transparent"></div>
-                </div>
               </button>
             </div>
           </div>
@@ -1796,6 +1941,8 @@ export default function Home() {
         onClose={() => setShowReloadPopup(false)}
         tokenCount={reloadStats.tokenCount}
         solAmount={reloadStats.solAmount}
+        isSwap={reloadStats.isSwap}
+        dustValue={reloadStats.dustValue}
       />
     </div>
   );

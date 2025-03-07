@@ -350,62 +350,58 @@ export default function Home() {
     }
   }, [publicKey]);
 
-  // Add new useEffect for initial state determination
-  useEffect(() => {
-    const initializeTokenState = async () => {
-      if (!publicKey) return;
-      
-      setTextLoadingState(true);
-      try {
-        let zeroTokens = 0;
-        let nonZeroTokens = 0;
+  // Update the initial state determination logic
+  const initializeTokenState = async () => {
+    if (!publicKey) return;
+    
+    setTextLoadingState(true);
+    try {
+      let zeroTokens = 0;
+      let nonZeroTokens = 0;
 
-        // Get counts of both types of tokens
-        await getTokenListZeroAmount(
-          publicKey.toString(),
-          (tokens) => { zeroTokens = tokens.length },
-          setTextLoadingState
-        );
+      // Get counts of both types of tokens
+      await getTokenListZeroAmount(
+        publicKey.toString(),
+        (tokens) => { zeroTokens = tokens.length },
+        setTextLoadingState
+      );
 
+      await getTokenListMoreThanZero(
+        publicKey.toString(),
+        (tokens) => { nonZeroTokens = tokens.length },
+        setTextLoadingState
+      );
+
+      console.log('Initial token counts:', { zeroTokens, nonZeroTokens });
+
+      // Modified logic: If both sections have tokens, prioritize close account section
+      const shouldBeInSwapState = nonZeroTokens > 0 && zeroTokens === 0;
+      setSwapState(shouldBeInSwapState);
+
+      // Load the appropriate token list
+      if (shouldBeInSwapState) {
         await getTokenListMoreThanZero(
           publicKey.toString(),
-          (tokens) => { nonZeroTokens = tokens.length },
+          setTokenList,
           setTextLoadingState
         );
-
-        console.log('Initial token counts:', { zeroTokens, nonZeroTokens });
-
-        // Set initial state based on token availability
-        const shouldBeInSwapState = nonZeroTokens > 0;
-        setSwapState(shouldBeInSwapState);
-
-        // Load the appropriate token list
-        if (shouldBeInSwapState) {
-          await getTokenListMoreThanZero(
-            publicKey.toString(),
-            setTokenList,
-            setTextLoadingState
-          );
-        } else {
-          await getTokenListZeroAmount(
-            publicKey.toString(),
-            setTokenList,
-            setTextLoadingState
-          );
-        }
-
-        // Update token counts state
-        setTokenCounts({ zero: zeroTokens, nonZero: nonZeroTokens });
-      } catch (error) {
-        console.error('Error initializing token state:', error);
-      } finally {
-        setTextLoadingState(false);
+      } else {
+        await getTokenListZeroAmount(
+          publicKey.toString(),
+          setTokenList,
+          setTextLoadingState
+        );
       }
-    };
 
-    initializeTokenState();
-  }, [publicKey]); // Only run when wallet connects/
-  
+      // Update token counts state
+      setTokenCounts({ zero: zeroTokens, nonZero: nonZeroTokens });
+    } catch (error) {
+      console.error('Error initializing token state:', error);
+    } finally {
+      setTextLoadingState(false);
+    }
+  };
+
   // Update the calculateTotalValue function
 const calculateTotalValue = (tokens: TokenInfo[]) => {
   if (!tokens || !solPrice || solPrice === 0) return 0;

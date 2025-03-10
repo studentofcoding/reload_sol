@@ -102,14 +102,7 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
                 className="flex items-center gap-2 px-6 py-3 rounded-lg bg-[#1DA1F2] text-white hover:bg-[#1a8cd8] transition-colors"
               >
                 <FaTwitter />
-                Share Achievement
-              </button>
-              
-              <button
-                onClick={downloadImage}
-                className="flex items-center gap-2 px-6 py-3 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-              >
-                Download Image
+                Share the news!
               </button>
             </div>
           </div>

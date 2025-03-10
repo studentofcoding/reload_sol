@@ -29,7 +29,7 @@ import { fetchWalletStats } from '@/utils/stats';
 import { useReferral } from '@/contexts/referralContext';
 import { DEFAULT_PLATFORM_FEE, DEFAULT_REFERRAL_FEE } from '@/types/referral';
 import ReloadPopup from './ReloadPopup';
-import { SOL_PRICE_API } from "@/config";
+import { SOL_PRICE_API_USD, SOL_PRICE_API_IDR } from "@/config";
 import { startTimer, stopTimer, measureAsync } from "@/utils/timing";
 
 const SLIPPAGE = 20;
@@ -231,25 +231,101 @@ export default function Home() {
 
   // Add these at the top of the component
   const [solPrice, setSolPrice] = useState<number>(0);
+  const [userCurrency, setUserCurrency] = useState<'USD' | 'IDR'>('USD');
+  const [solPriceUSD, setSolPriceUSD] = useState<number>(0);
+  const [solPriceIDR, setSolPriceIDR] = useState<number>(0);
 
-  // Add this useEffect to fetch SOL price
+  // Add this function to detect user location
+  const detectUserLocation = async () => {
+    try {
+      const response = await fetch('https://ipapi.co/json/');
+      const data = await response.json();
+      
+      // Set currency based on country code
+      if (data.country_code === 'ID') {
+        setUserCurrency('IDR');
+      } else {
+        setUserCurrency('USD');
+      }
+    } catch (error) {
+      console.error('Error detecting location:', error);
+      // Default to USD if detection fails
+      setUserCurrency('USD');
+    }
+  };
+
+  // Add a currency formatter function
+  const formatCurrency = (value: number) => {
+    if (userCurrency === 'USD') {
+      return `$${value.toFixed(2)}`;
+    } else {
+      return `Rp${value.toLocaleString('id-ID')}`;
+    }
+  };
+
+  // Replace your current SOL price fetching useEffect
   useEffect(() => {
-    const fetchSolPrice = async () => {
-      try {
-        const response = await fetch(SOL_PRICE_API);
-        const data = await response.json();
-        setSolPrice(data.solana.usd);
-      } catch (error) {
-        console.error('Error fetching SOL price:', error);
-        setSolPrice(0);
+    const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+    let lastFetchTime = 0;
+    let cachedUSDPrice = 0;
+    let cachedIDRPrice = 0;
+
+    const fetchSolPrices = async () => {
+      const now = Date.now();
+      
+      // Only fetch if cache has expired
+      if (now - lastFetchTime >= CACHE_DURATION) {
+        try {
+          // Fetch USD price
+          const responseUSD = await fetch(SOL_PRICE_API_USD);
+          const dataUSD = await responseUSD.json();
+          cachedUSDPrice = dataUSD.solana.usd;
+          setSolPriceUSD(cachedUSDPrice);
+          
+          // Fetch IDR price
+          const responseIDR = await fetch(SOL_PRICE_API_IDR);
+          const dataIDR = await responseIDR.json();
+          cachedIDRPrice = dataIDR.solana.idr;
+          setSolPriceIDR(cachedIDRPrice);
+
+          lastFetchTime = now;
+        } catch (error) {
+          console.error('Error fetching SOL prices:', error);
+          setSolPrice(0);
+          return;
+        }
+      }
+
+      // Set price from cache based on currency
+      if (userCurrency === 'USD') {
+        setSolPrice(cachedUSDPrice);
+      } else {
+        setSolPrice(cachedIDRPrice);
       }
     };
 
-    fetchSolPrice();
-    // Refresh price every 60 seconds
-    const interval = setInterval(fetchSolPrice, 60000);
-    return () => clearInterval(interval);
+    // Initial fetch
+    fetchSolPrices();
+
+  }, [userCurrency]); // Re-fetch when currency preference changes
+
+  // Add a useEffect to detect location on component mount
+  useEffect(() => {
+    detectUserLocation();
   }, []);
+
+  // Add this function to toggle currency
+  const toggleCurrency = () => {
+    const newCurrency = userCurrency === 'USD' ? 'IDR' : 'USD';
+    setUserCurrency(newCurrency);
+    
+    // Update solPrice based on new currency
+    if (newCurrency === 'USD') {
+      setSolPrice(solPriceUSD);
+    } else {
+      setSolPrice(solPriceIDR);
+    }
+  };
 
   useEffect(() => {
     if (publicKey) {
@@ -371,7 +447,8 @@ export default function Home() {
       );
 
       // Set state based on token counts
-      const shouldBeInSwapState = nonZeroTokens.length > 0 && zeroTokens.length === 0;
+      const shouldBeInSwapState = nonZeroTokens.length > 100 || 
+        (nonZeroTokens.length > 0 && zeroTokens.length === 0);
       setSwapState(shouldBeInSwapState);
 
       // Set the appropriate token list
@@ -1689,10 +1766,20 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                       {swapState ? (
                         <>
                           ~{((tokenList?.length || 0) * 0.001) + (calculateTotalValue(tokenList))} SOL
+                          {solPrice > 0 && (
+                            <span className="text-sm ml-1">
+                              ({formatCurrency(((tokenList?.length || 0) * 0.001 + calculateTotalValue(tokenList)) * solPrice)})
+                            </span>
+                          )}
                         </>
                       ) : (
                         <>
                           {(tokenList?.length || 0) * 0.001} SOL
+                          {solPrice > 0 && (
+                            <span className="text-sm ml-1">
+                              ({formatCurrency(((tokenList?.length || 0) * 0.001) * solPrice)})
+                            </span>
+                          )}
                         </>
                       )}
                     </span> to reload 🚀
@@ -1705,7 +1792,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               </div>
             </div>
             <div className="flex items-center gap-4">
-             <div 
+              <div 
                 onClick={() => {
                   if (canSwitchSection(swapState, tokenCounts.zero, tokenCounts.nonZero)) {
                     changeMethod();

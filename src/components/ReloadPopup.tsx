@@ -16,6 +16,7 @@ interface ReloadPopupProps {
   solAmount: number;
   isSwap?: boolean;
   dustValue?: number;
+  successfulTokenIds?: string[];
 }
 
 const ReloadPopup: FC<ReloadPopupProps> = ({ 
@@ -24,7 +25,8 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
   tokenCount,
   solAmount,
   isSwap = false,
-  dustValue = 0
+  dustValue = 0,
+  successfulTokenIds = []
 }) => {
   const popupRef = useRef<HTMLDivElement>(null);
   const { publicKey } = useWallet();
@@ -39,13 +41,6 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
   const [refreshProgress, setRefreshProgress] = useState(0);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [refreshText, setRefreshText] = useState<string>("Refreshing token list...");
-
-  // Run token list refresh when popup is shown
-  useEffect(() => {
-    if (isOpen && publicKey) {
-      refreshTokenList();
-    }
-  }, [isOpen, publicKey]);
 
   const refreshTokenList = async () => {
     if (!publicKey) return;
@@ -62,29 +57,33 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
         { swapState, tokenList },
         {
           setLoadingState: (loading) => {
-            if (!loading) setRefreshing(false);
+            setRefreshing(loading);
           },
           setLoadingText: setRefreshText,
           setLoadingProgress: setRefreshProgress,
           setTokenList,
           setTokenCounts,
           setSelectedTokenList: () => setSelectedTokenList([]),
-          onSuccess: () => console.log("Token list refreshed from ReloadPopup"),
+          onSuccess: () => {
+            console.log("Token list refreshed from ReloadPopup");
+            setRefreshing(false);
+          },
           onError: (error) => {
             console.error('Refresh error:', error);
             setRefreshError("Failed to refresh token list");
+            setRefreshing(false);
           }
         },
         {
           connection,
           maxRetries: 3,
-          retryDelay: 1500
+          retryDelay: 1500,
+          successfulTokenIds: successfulTokenIds
         }
       );
     } catch (error) {
       console.error('Refresh error:', error);
       setRefreshError("Failed to refresh token list");
-    } finally {
       setRefreshing(false);
     }
   };

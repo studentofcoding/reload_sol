@@ -330,8 +330,9 @@ export async function refreshTokenListWithRetry(
   options: {
     maxRetries?: number,
     retryDelay?: number,
-    lastSignature?: string,
-    connection?: Connection
+    lastSignatures?: string[],
+    connection?: Connection,
+    successfulTokenIds?: string[]
   } = {}
 ): Promise<TokenLists> {
   const {
@@ -348,33 +349,75 @@ export async function refreshTokenListWithRetry(
   const {
     maxRetries = 3,
     retryDelay = 1000,
-    lastSignature,
-    connection
+    lastSignatures = [],
+    connection,
+    successfulTokenIds = []
   } = options;
 
   setLoadingText?.("Refreshing token list...");
   
   try {
-    // If we have a signature and connection, wait for confirmation first
-    if (lastSignature && connection) {
-      console.log(`Waiting for transaction confirmation: ${lastSignature}`);
-      const { blockhash } = await connection.getLatestBlockhash();
+    // If we have successful token IDs, immediately update the UI
+    if (successfulTokenIds.length > 0 && setTokenList && currentState.tokenList) {
+      setLoadingText?.("Updating token list with processed tokens...");
       
-      await connection.confirmTransaction({
-        signature: lastSignature,
-        blockhash,
-        lastValidBlockHeight: await connection.getBlockHeight()
-      }, 'confirmed');
-
-      // Verify transaction success
-      const txInfo = await connection.getTransaction(lastSignature, {
-        commitment: 'confirmed',
-        maxSupportedTransactionVersion: 0
-      });
+      // Filter out the successful tokens from the current list
+      const updatedTokenList = currentState.tokenList.filter(
+        token => !successfulTokenIds.includes(token.id)
+      );
       
-      if (txInfo?.meta?.err) {
-        throw new Error('Transaction failed after confirmation');
+      // Update the UI immediately
+      setTokenList(updatedTokenList);
+      
+      // Also update token counts if needed
+      if (setTokenCounts) {
+        // We'll need to fetch both lists to update counts properly
+        const { zeroTokens, nonZeroTokens } = await getFilteredTokenLists(
+          walletAddress,
+          (loading) => {}, // Empty callback to avoid changing loading state
+          undefined // No progress needed for this quick update
+        );
+        
+        setTokenCounts({
+          zero: zeroTokens.length,
+          nonZero: nonZeroTokens.length
+        });
       }
+    }
+
+    // If we have signatures and connection, wait for all confirmations first
+    if (lastSignatures.length > 0 && connection) {
+      setLoadingText?.(`Waiting for ${lastSignatures.length} transaction(s) to confirm...`);
+      const { blockhash } = await connection.getLatestBlockhash();
+      const blockHeight = await connection.getBlockHeight();
+      
+      // Wait for all signatures to confirm
+      for (let i = 0; i < lastSignatures.length; i++) {
+        const signature = lastSignatures[i];
+        setLoadingText?.(`Confirming transaction ${i+1}/${lastSignatures.length}...`);
+        
+        console.log(`Waiting for transaction confirmation: ${signature}`);
+        await connection.confirmTransaction({
+          signature,
+          blockhash,
+          lastValidBlockHeight: blockHeight
+        }, 'confirmed');
+
+        // Verify transaction success
+        const txInfo = await connection.getTransaction(signature, {
+          commitment: 'confirmed',
+          maxSupportedTransactionVersion: 0
+        });
+        
+        if (txInfo?.meta?.err) {
+          console.warn(`Transaction ${signature} failed after confirmation`);
+          // Continue with other signatures instead of throwing
+        }
+      }
+      
+      // Add a small delay after all confirmations to allow blockchain state to update
+      setLoadingText?.("All transactions confirmed, allowing state to update...");
+      await sleep(2000);
     }
 
     // Store initial token count for comparison
@@ -408,7 +451,8 @@ export async function refreshTokenListWithRetry(
         ? result.nonZeroTokens.length 
         : result.zeroTokens.length;
         
-      tokenCountChanged = newTokenCount !== initialTokenCount;
+      // If we already updated the UI with successful tokens, consider that a change
+      tokenCountChanged = newTokenCount !== initialTokenCount || successfulTokenIds.length > 0;
       retryCount++;
       
     } while (!tokenCountChanged && retryCount < maxRetries);

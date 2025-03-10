@@ -84,6 +84,7 @@ interface ReloadStats {
   solAmount: number;
   isSwap: boolean;
   dustValue: number;
+  successfulTokenIds?: string[]; // Add this field
 }
 
 async function getWorkingConnection() {
@@ -261,7 +262,7 @@ export default function Home() {
         console.error("Failed to initialize connection:", error);
       });
     }
-  }, [publicKey]); // Only run when publicKey changes
+  }, [publicKey]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (selectedTokenList.length === tokenList.length && tokenList.length !== 0) {
@@ -680,17 +681,35 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           );
           const solAmount = closeResults.successfulTokens.length * 0.001;
           
-          // Set reload stats and show popup - let the popup handle the refresh
+          // SIMPLIFIED: Directly update the token list by removing successful tokens
+          if (tokenList && tokenList.length > 0) {
+            const updatedTokenList = tokenList.filter(
+              (token: TokenInfo) => !closeResults.successfulTokens.includes(token.id)
+            );
+            setTokenList(updatedTokenList);
+            
+            // Update token counts
+            const { zero, nonZero } = tokenCounts;
+            setTokenCounts({
+              zero: swapState ? zero : zero - closeResults.successfulTokens.length,
+              nonZero: swapState ? nonZero - closeResults.successfulTokens.length : nonZero
+            });
+          }
+          
+          // Clear selection
+          setSelectedTokenList([]);
+          
+          // Set reload stats and show popup WITHOUT refreshing token list
           setReloadStats({
             tokenCount: closeResults.successfulTokens.length,
             solAmount: solAmount,
             isSwap: false,
-            dustValue: 0
+            dustValue: 0,
+            successfulTokenIds: closeResults.successfulTokens
           });
+          
           setShowReloadPopup(true);
           successAlert(`You've been Reload your SOL`);
-          
-          // No need to call refreshTokenList here - ReloadPopup will handle it
         }
         if (closeResults.failedTokens.length > 0) {
           warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
@@ -920,17 +939,46 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               const dustValue = calculateTotalValue(tokenList);
               const totalAmount = baseAmount + dustValue;
               
-              // Set reload stats and show popup - let the popup handle the refresh
+              // Collect all successful signatures from both swap and close operations
+              const allSuccessfulSignatures = [
+                ...(swapResults.successfulSignatures || []),
+                ...(closeResults.successfulSignatures || [])
+              ];
+              
+              // Collect all successful token IDs
+              const allSuccessfulTokenIds = [
+                ...(swapResults.successfulTokens || []),
+                ...(closeResults.successfulTokens || [])
+              ];
+              
+              // SIMPLIFIED: Directly update the token list by removing successful tokens
+              if (tokenList && tokenList.length > 0) {
+                const updatedTokenList = tokenList.filter(
+                  (token: TokenInfo) => !allSuccessfulTokenIds.includes(token.id)
+                );
+                setTokenList(updatedTokenList);
+                
+                // Update token counts
+                const { zero, nonZero } = tokenCounts;
+                setTokenCounts({
+                  zero: swapState ? zero : zero - allSuccessfulTokenIds.length,
+                  nonZero: swapState ? nonZero - allSuccessfulTokenIds.length : nonZero
+                });
+              }
+              
+              // Clear selection
+              setSelectedTokenList([]);
+              
+              // Set reload stats and show popup WITHOUT refreshing token list
               setReloadStats({
                 tokenCount: closeResults.successfulTokens.length,
                 solAmount: totalAmount,
                 isSwap: true,
-                dustValue: dustValue
+                dustValue: dustValue,
+                successfulTokenIds: allSuccessfulTokenIds
               });
               setShowReloadPopup(true);
               successAlert(`Successfully Reload your SOL!`);
-              
-              // No need to call refreshTokenList here - ReloadPopup will handle it
             }
             if (closeResults.failedTokens.length > 0) {
               warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
@@ -1044,7 +1092,6 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           }
         },
         {
-          lastSignature,
           connection: solConnection || undefined,
           maxRetries: 3,
           retryDelay: 1500
@@ -1410,7 +1457,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     connection: Connection,
     blockhash: string,
     lastValidBlockHeight: number,
-    bundleType: 'close' | 'swap' = 'swap'  // default to 'swap' for backward compatibility
+    bundleType: 'close' | 'swap' = 'swap'
   ): Promise<BundleResults> {
     if (!connection) {
       throw new Error("Connection not available");
@@ -1634,11 +1681,11 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                 {textLoadingState ? (
                   <span className="flex items-center gap-2">
                     <IoMdRefresh className="w-4 h-4 animate-spin" />
-                    <span>{loadingText || "Processing..."}</span>
+                    <span className="hover:text-gray-300 transition-colors font-semibold text-md">{loadingText || "Processing..."}</span>
                   </span>
                 ) : (
-                  <span className="hover:text-gray-300 transition-colors">
-                    You have around <span className="font-bold">
+                  <span className="hover:text-gray-300 transition-colors text-md">
+                    <span className="font-bold">
                       {swapState ? (
                         <>
                           ~{((tokenList?.length || 0) * 0.001) + (calculateTotalValue(tokenList))} SOL
@@ -2036,6 +2083,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
         solAmount={reloadStats.solAmount}
         isSwap={reloadStats.isSwap}
         dustValue={reloadStats.dustValue}
+        successfulTokenIds={reloadStats.successfulTokenIds}
       />
     </div>
   );

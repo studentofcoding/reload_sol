@@ -1,8 +1,13 @@
 'use client';
 
-import { FC, useRef } from 'react';
+import { FC, useRef, useEffect, useContext, useState } from 'react';
 import { FaTimes, FaTwitter } from 'react-icons/fa';
+import { IoMdRefresh } from 'react-icons/io';
 import html2canvas from 'html2canvas';
+import UserContext from "@/contexts/usercontext";
+import { forceRefreshTokens, getFilteredTokenLists, refreshTokenListWithRetry } from "@/utils/tokenList";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { Connection } from '@solana/web3.js';
 
 interface ReloadPopupProps {
   isOpen: boolean;
@@ -22,6 +27,67 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
   dustValue = 0
 }) => {
   const popupRef = useRef<HTMLDivElement>(null);
+  const { publicKey } = useWallet();
+  const { 
+    setTokenList, 
+    swapState, 
+    setTokenCounts,
+    setSelectedTokenList,
+    tokenList
+  } = useContext<any>(UserContext);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState(0);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [refreshText, setRefreshText] = useState<string>("Refreshing token list...");
+
+  // Run token list refresh when popup is shown
+  useEffect(() => {
+    if (isOpen && publicKey) {
+      refreshTokenList();
+    }
+  }, [isOpen, publicKey]);
+
+  const refreshTokenList = async () => {
+    if (!publicKey) return;
+    
+    setRefreshing(true);
+    setRefreshError(null);
+    
+    try {
+      // Use the centralized function with retry capability
+      const connection = new Connection(String(process.env.NEXT_PUBLIC_SOLANA_RPC));
+      
+      await refreshTokenListWithRetry(
+        publicKey.toString(),
+        { swapState, tokenList },
+        {
+          setLoadingState: (loading) => {
+            if (!loading) setRefreshing(false);
+          },
+          setLoadingText: setRefreshText,
+          setLoadingProgress: setRefreshProgress,
+          setTokenList,
+          setTokenCounts,
+          setSelectedTokenList: () => setSelectedTokenList([]),
+          onSuccess: () => console.log("Token list refreshed from ReloadPopup"),
+          onError: (error) => {
+            console.error('Refresh error:', error);
+            setRefreshError("Failed to refresh token list");
+          }
+        },
+        {
+          connection,
+          maxRetries: 3,
+          retryDelay: 1500
+        }
+      );
+    } catch (error) {
+      console.error('Refresh error:', error);
+      setRefreshError("Failed to refresh token list");
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const shareToTwitter = () => {
     const url = 'https://reloadsol.xyz';
@@ -86,15 +152,32 @@ const ReloadPopup: FC<ReloadPopupProps> = ({
             <p className="text-xl text-white/90 mb-4">
               You&apos;ve successfully reloaded, check your wallet
             </p>
-            {/* <div className="text-4xl font-bold text-blue-400 mb-2">
-              {solAmount.toFixed(3)} SOL
-            </div>
             
-            {isSwap && dustValue > 0 && (
-              <p className="text-sm text-white/70 mb-4">
-                Including {dustValue.toFixed(3)} SOL from dust tokens
-              </p>
-            )} */}
+            {/* Token list refresh status */}
+            {refreshing ? (
+              <div className="mt-4 mb-2">
+                <div className="flex items-center justify-center gap-2 text-white/80 mb-2">
+                  <IoMdRefresh className="w-4 h-4 animate-spin" />
+                  <span>{refreshText}</span>
+                </div>
+                <div className="w-full bg-gray-700 rounded-full h-1.5">
+                  <div 
+                    className="bg-blue-500 h-1.5 rounded-full transition-all duration-300" 
+                    style={{ width: `${refreshProgress}%` }}
+                  />
+                </div>
+              </div>
+            ) : refreshError ? (
+              <div className="text-red-400 mt-2 mb-4">
+                {refreshError}
+                <button 
+                  onClick={refreshTokenList}
+                  className="ml-2 text-blue-400 hover:text-blue-300 underline"
+                >
+                  Try again
+                </button>
+              </div>
+            ) : null}
 
             <div className="flex justify-center gap-4 mt-8">
               <button

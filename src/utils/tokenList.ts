@@ -309,3 +309,138 @@ export function forceRefreshTokens(): void {
   // console.log('Clearing token cache');
   tokenCache.clear();
 }
+
+// Add this new function to centralize refresh logic with retry capability
+export async function refreshTokenListWithRetry(
+  walletAddress: string,
+  currentState: {
+    swapState: boolean,
+    tokenList: TokenInfo[]
+  },
+  callbacks: {
+    setLoadingState: (loading: boolean) => void,
+    setLoadingText?: (text: string) => void,
+    setLoadingProgress?: (progress: number) => void,
+    setTokenList?: (list: TokenInfo[]) => void,
+    setTokenCounts?: (counts: { zero: number, nonZero: number }) => void,
+    setSelectedTokenList?: (list: any[]) => void,
+    onSuccess?: () => void,
+    onError?: (error: any) => void
+  },
+  options: {
+    maxRetries?: number,
+    retryDelay?: number,
+    lastSignature?: string,
+    connection?: Connection
+  } = {}
+): Promise<TokenLists> {
+  const {
+    setLoadingState,
+    setLoadingText,
+    setLoadingProgress,
+    setTokenList,
+    setTokenCounts,
+    setSelectedTokenList,
+    onSuccess,
+    onError
+  } = callbacks;
+
+  const {
+    maxRetries = 3,
+    retryDelay = 1000,
+    lastSignature,
+    connection
+  } = options;
+
+  setLoadingText?.("Refreshing token list...");
+  
+  try {
+    // If we have a signature and connection, wait for confirmation first
+    if (lastSignature && connection) {
+      console.log(`Waiting for transaction confirmation: ${lastSignature}`);
+      const { blockhash } = await connection.getLatestBlockhash();
+      
+      await connection.confirmTransaction({
+        signature: lastSignature,
+        blockhash,
+        lastValidBlockHeight: await connection.getBlockHeight()
+      }, 'confirmed');
+
+      // Verify transaction success
+      const txInfo = await connection.getTransaction(lastSignature, {
+        commitment: 'confirmed',
+        maxSupportedTransactionVersion: 0
+      });
+      
+      if (txInfo?.meta?.err) {
+        throw new Error('Transaction failed after confirmation');
+      }
+    }
+
+    // Store initial token count for comparison
+    const initialTokenCount = currentState.tokenList?.length || 0;
+    
+    // Clear cache and fetch fresh data
+    forceRefreshTokens();
+    
+    // Try to refresh with retries if token count doesn't change
+    let result: TokenLists = { zeroTokens: [], nonZeroTokens: [] };
+    let retryCount = 0;
+    let tokenCountChanged = false;
+    
+    do {
+      if (retryCount > 0) {
+        console.log(`Retry ${retryCount}/${maxRetries}: Token count unchanged, retrying...`);
+        setLoadingText?.(`Retry ${retryCount}/${maxRetries}: Refreshing token list...`);
+        await sleep(retryDelay);
+        forceRefreshTokens(); // Force clear cache again
+      }
+      
+      // Fetch fresh token lists
+      result = await getFilteredTokenLists(
+        walletAddress,
+        setLoadingState,
+        setLoadingProgress
+      );
+      
+      // Check if token count has changed
+      const newTokenCount = currentState.swapState 
+        ? result.nonZeroTokens.length 
+        : result.zeroTokens.length;
+        
+      tokenCountChanged = newTokenCount !== initialTokenCount;
+      retryCount++;
+      
+    } while (!tokenCountChanged && retryCount < maxRetries);
+    
+    // Update UI state with the new token lists
+    if (setTokenList) {
+      setTokenList(currentState.swapState ? result.nonZeroTokens : result.zeroTokens);
+    }
+    
+    if (setTokenCounts) {
+      setTokenCounts({
+        zero: result.zeroTokens.length,
+        nonZero: result.nonZeroTokens.length
+      });
+    }
+    
+    // Clear selection if needed
+    if (setSelectedTokenList) {
+      setSelectedTokenList([]);
+    }
+    
+    // Call success callback
+    if (tokenCountChanged) {
+      onSuccess?.();
+    } else if (retryCount >= maxRetries) {
+      console.warn("Token list refresh: Maximum retries reached without token count change");
+    }
+    
+    return result;
+  } catch (error) {
+    console.error("ERROR in refreshTokenListWithRetry:", error);
+    onError?.(error);
+    return { zeroTokens: [], nonZeroTokens: [] };
+  }
+}

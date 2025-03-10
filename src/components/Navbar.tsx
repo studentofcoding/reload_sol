@@ -20,7 +20,7 @@ import axios from "axios";
 import { RateLimiter } from "@/utils/rate-limiter";
 import { toast } from "react-hot-toast";
 import { IoMdRefresh } from "react-icons/io";
-import { forceRefreshTokens, getFilteredTokenLists } from "@/utils/tokenList";
+import { forceRefreshTokens, getFilteredTokenLists, refreshTokenListWithRetry } from "@/utils/tokenList";
 import { TokenInfo } from "@/types/token";
 import { cacheOperation, syncOperationsToSupabase, supabase, setupOperationSync } from '@/utils/supabase';
 import TokenListSkeleton from './TokenListSkeleton';
@@ -679,6 +679,8 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             closeResults.successfulTokens.length
           );
           const solAmount = closeResults.successfulTokens.length * 0.001;
+          
+          // Set reload stats and show popup - let the popup handle the refresh
           setReloadStats({
             tokenCount: closeResults.successfulTokens.length,
             solAmount: solAmount,
@@ -688,23 +690,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           setShowReloadPopup(true);
           successAlert(`You've been Reload your SOL`);
           
-          // Get the last successful signature for refresh
-          const lastSignature = closeResults.successfulSignatures?.[closeResults.successfulSignatures.length - 1];
-          if (lastSignature) {
-            setLoadingText("Refreshing token list...");
-            // Force clear cache before refresh
-            forceRefreshTokens();
-            
-            // Wait for transaction to be confirmed and fetch fresh data
-            await refreshTokenList(lastSignature);
-            
-            // Double-check if we need another refresh
-            const currentList = swapState ? tokenCounts.nonZero : tokenCounts.zero;
-            if (currentList === tokenList.length) {
-              console.log("Token list might not be updated, trying again...");
-              await refreshTokenList(lastSignature);
-            }
-          }
+          // No need to call refreshTokenList here - ReloadPopup will handle it
         }
         if (closeResults.failedTokens.length > 0) {
           warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
@@ -934,6 +920,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               const dustValue = calculateTotalValue(tokenList);
               const totalAmount = baseAmount + dustValue;
               
+              // Set reload stats and show popup - let the popup handle the refresh
               setReloadStats({
                 tokenCount: closeResults.successfulTokens.length,
                 solAmount: totalAmount,
@@ -943,27 +930,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               setShowReloadPopup(true);
               successAlert(`Successfully Reload your SOL!`);
               
-              // Get the last successful signature for refresh
-              const lastSignature = closeResults.successfulSignatures?.[closeResults.successfulSignatures.length - 1];
-              if (lastSignature) {
-                setLoadingText("Refreshing token list...");
-                // Force clear cache before refresh
-                forceRefreshTokens();
-                
-                // Wait for transaction to be confirmed and fetch fresh data
-                await measureAsync("Refresh Token List", () => 
-                  refreshTokenList(lastSignature)
-                );
-                
-                // Double-check if we need another refresh
-                const currentList = swapState ? tokenCounts.nonZero : tokenCounts.zero;
-                if (currentList === tokenList.length) {
-                  console.log("Token list might not be updated, trying again...");
-                  await measureAsync("Second Refresh Attempt", () => 
-                    refreshTokenList(lastSignature)
-                  );
-                }
-              }
+              // No need to call refreshTokenList here - ReloadPopup will handle it
             }
             if (closeResults.failedTokens.length > 0) {
               warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
@@ -1052,57 +1019,37 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     }
   };
 
+  // Simplify the refreshTokenList function to be used only for manual refreshes
   const refreshTokenList = async (lastSignature?: string) => {
     if (!publicKey || isRefreshing || !wallet) return;
     
     setIsRefreshing(true);
-    setLoadingText("Refreshing token list...");
     
     try {
-      // If we have a signature, wait for confirmation first
-      if (lastSignature && solConnection) {
-        console.log(`Waiting for transaction confirmation: ${lastSignature}`);
-        const { blockhash } = await solConnection.getLatestBlockhash();
-        
-        await solConnection.confirmTransaction({
-          signature: lastSignature,
-          blockhash,
-          lastValidBlockHeight: await solConnection.getBlockHeight()
-        }, 'confirmed');
-
-        // Verify transaction success
-        const txInfo = await solConnection.getTransaction(lastSignature, {
-          commitment: 'confirmed',
-          maxSupportedTransactionVersion: 0
-        });
-        
-        if (txInfo?.meta?.err) {
-          throw new Error('Transaction failed after confirmation');
-        }
-      }
-
-      // Clear cache and fetch fresh data
-      forceRefreshTokens();
-      
-      const { zeroTokens, nonZeroTokens } = await getFilteredTokenLists(
+      // Use the centralized function with retry capability
+      await refreshTokenListWithRetry(
         publicKey.toString(),
-        setTextLoadingState,
-        setLoadingProgress
+        { swapState, tokenList },
+        {
+          setLoadingState: setTextLoadingState,
+          setLoadingText,
+          setLoadingProgress,
+          setTokenList,
+          setTokenCounts,
+          setSelectedTokenList: () => setSelectedTokenList([]),
+          onSuccess: () => successAlert("Token list refreshed"),
+          onError: (error) => {
+            console.error('Refresh error:', error);
+            warningAlert("Failed to refresh token list");
+          }
+        },
+        {
+          lastSignature,
+          connection: solConnection || undefined,
+          maxRetries: 3,
+          retryDelay: 1500
+        }
       );
-
-      // Update the current section's token list without switching
-      setTokenList(swapState ? nonZeroTokens : zeroTokens);
-      
-      // Update token counts
-      setTokenCounts({
-        zero: zeroTokens.length,
-        nonZero: nonZeroTokens.length
-      });
-
-      // Clear selection
-      setSelectedTokenList([]);
-      
-      successAlert("Token list refreshed");
     } catch (error) {
       console.error('Refresh error:', error);
       warningAlert("Failed to refresh token list");

@@ -4,6 +4,7 @@ import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { getMetadataAccountDataSerializer } from '@metaplex-foundation/mpl-token-metadata';
 import { getPdaMetadataKey } from "@raydium-io/raydium-sdk";
 import { TokenInfo, TokenCache, TokenData, JupiterPriceResponse } from "@/types/token";
+import { startTimer, stopTimer, measureAsync } from "./timing";
 
 
 // Add excluded and problematic token lists
@@ -30,7 +31,7 @@ const tokenCache = new Map<string, TokenCache>();
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function batchFetchPrices(mints: string[]): Promise<Record<string, number>> {
-  console.time('jupiter-batch');
+  startTimer('jupiter-batch');
   const chunks = [];
   for (let i = 0; i < mints.length; i += BATCH_SIZE) {
     chunks.push(mints.slice(i, i + BATCH_SIZE));
@@ -40,13 +41,16 @@ async function batchFetchPrices(mints: string[]): Promise<Record<string, number>
   const RETRY_DELAY = 400;
   const MAX_RETRIES = 3;
 
-  await Promise.all(chunks.map(async (chunk) => {
+  await Promise.all(chunks.map(async (chunk, index) => {
+    const chunkLabel = `Price Chunk ${index + 1}/${chunks.length}`;
+    startTimer(chunkLabel);
+    
     for (let retry = 0; retry < MAX_RETRIES; retry++) {
       try {
         const mintIds = chunk.join(',');
         const response = await fetch(`https://api.jup.ag/price/v2?ids=${mintIds}`);
         const priceData = (await response.json()) as JupiterPriceResponse;
-        console.log('Price data:', priceData);
+        console.log(`Price data for chunk ${index + 1}:`, priceData);
         
         if (priceData?.data) {
           Object.entries(priceData.data).forEach(([mint, data]) => {
@@ -70,9 +74,12 @@ async function batchFetchPrices(mints: string[]): Promise<Record<string, number>
         }
       }
     }
+    
+    stopTimer(chunkLabel);
   }));
   
-  console.timeEnd('jupiter-batch');
+  stopTimer('jupiter-batch');
+  console.log(`Fetched prices for ${Object.keys(prices).length}/${mints.length} tokens`);
   return prices;
 }
 
@@ -163,7 +170,7 @@ async function processBatch(
 
     const data = tokenData?.find(d => d.mint === mint);
     if (!data) {
-      console.log(`No data found for token ${mint}`);
+      // console.log(`No data found for token ${mint}`);
       return null;
     }
 
@@ -176,7 +183,7 @@ async function processBatch(
       decimal: data.decimals
     };
 
-    console.log(`Caching data for token ${mint}`);
+    // console.log(`Caching data for token ${mint}`);
     tokenCache.set(mint, {
       data: tokenInfo,
       timestamp: Date.now()
@@ -185,138 +192,120 @@ async function processBatch(
     return tokenInfo;
   }).filter((token): token is TokenInfo => token !== null);
 
-  console.log('Batch processing complete with', processedTokens.length, 'valid tokens');
+  // console.log('Batch processing complete with', processedTokens.length, 'valid tokens');
   return processedTokens;
 }
 
-export async function getTokenListZeroAmount(
-  address: string, 
-  setTokenList: (tokens: TokenInfo[]) => void, 
+// Add a loading state to prevent duplicate fetches
+let isLoading = false;
+
+// Add this type to handle multiple token lists
+type TokenLists = {
+  zeroTokens: TokenInfo[];
+  nonZeroTokens: TokenInfo[];
+};
+
+// Create a new unified function
+export async function getFilteredTokenLists(
+  address: string,
   setLoadingState: (loading: boolean) => void,
   progressCallback?: (progress: number) => void
-): Promise<void> {
-  setLoadingState(true);
+): Promise<TokenLists> {
+  if (isLoading) {
+    // console.log('Token fetch already in progress, skipping...');
+    return { zeroTokens: [], nonZeroTokens: [] };
+  }
+  
+  isLoading = true;
   try {
     const connection = new Connection(String(process.env.NEXT_PUBLIC_SOLANA_RPC));
     
+    // Single RPC call to get all token accounts
     const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
       new PublicKey(address),
       { programId: TOKEN_PROGRAM_ID }
     );
 
-    // Filter for zero balance tokens only
+    // Split accounts by balance
     const zeroAccounts = tokenAccounts.value.filter(acc => 
       acc.account.data.parsed.info.tokenAmount.uiAmount === 0
     );
-
-    const allMints = zeroAccounts.map(acc => 
-      acc.account.data.parsed.info.mint
-    );
-    const prices = await batchFetchPrices(allMints);
-
-    const chunks = [];
-    for (let i = 0; i < zeroAccounts.length; i += BATCH_SIZE) {
-      chunks.push(zeroAccounts.slice(i, i + BATCH_SIZE));
-    }
-
-    let processedTokens: TokenInfo[] = [];
-    for (let i = 0; i < chunks.length; i += PARALLEL_BATCHES) {
-      const batchChunks = chunks.slice(i, i + PARALLEL_BATCHES);
-      const batchResults = await Promise.all(
-        batchChunks.map(chunk => processBatch(connection, chunk, prices))
-      );
-      
-      processedTokens = [...processedTokens, ...batchResults.flat()];
-      
-      const progress = Math.min(
-        ((i + PARALLEL_BATCHES) / chunks.length) * 100,
-        100
-      );
-      progressCallback?.(progress);
-      
-      setTokenList(processedTokens);
-
-      if (i + PARALLEL_BATCHES < chunks.length) {
-        await sleep(RPC_DELAY);
-      }
-    }
-
-  } catch (err) {
-    console.error("ERROR in getTokenListZeroAmount:", err);
-    errorAlert(err);
-  } finally {
-    setLoadingState(false);
-  }
-}
-
-export async function getTokenListMoreThanZero(
-  address: string, 
-  setTokenList: (tokens: TokenInfo[]) => void, 
-  setLoadingState: (loading: boolean) => void,
-  progressCallback?: (progress: number) => void
-): Promise<void> {
-  setLoadingState(true);
-  try {
-    const connection = new Connection(String(process.env.NEXT_PUBLIC_SOLANA_RPC));
-    
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
-      new PublicKey(address),
-      { programId: TOKEN_PROGRAM_ID }
-    );
-
-    // Filter for non-zero balance tokens only
     const nonZeroAccounts = tokenAccounts.value.filter(acc => 
       acc.account.data.parsed.info.tokenAmount.uiAmount > 0
     );
 
-    const allMints = nonZeroAccounts.map(acc => 
-      acc.account.data.parsed.info.mint
-    );
+    // Get all unique mints at once
+    const allMints = Array.from(new Set([
+      ...zeroAccounts.map(acc => acc.account.data.parsed.info.mint),
+      ...nonZeroAccounts.map(acc => acc.account.data.parsed.info.mint)
+    ]));
 
+    // Single price fetch for all tokens
     const prices = await batchFetchPrices(allMints);
 
-    const chunks = [];
-    for (let i = 0; i < nonZeroAccounts.length; i += BATCH_SIZE) {
-      chunks.push(nonZeroAccounts.slice(i, i + BATCH_SIZE));
-    }
+    // Process both lists in parallel
+    const [zeroTokens, nonZeroTokens] = await Promise.all([
+      processTokenBatches(connection, zeroAccounts, prices, progressCallback),
+      processTokenBatches(connection, nonZeroAccounts, prices, progressCallback)
+    ]);
 
-    let processedTokens: TokenInfo[] = [];
-    for (let i = 0; i < chunks.length; i += PARALLEL_BATCHES) {
-      const batchChunks = chunks.slice(i, i + PARALLEL_BATCHES);
-      const batchResults = await Promise.all(
-        batchChunks.map(chunk => processBatch(connection, chunk, prices))
-      );
-      
-      // Filter out tokens worth more than $1
-      const filteredBatchResults = batchResults.flat().filter(token => {
-        const tokenValue = token.price * token.balance;
-        return tokenValue < 0.5;
-      });
-      
-      processedTokens = [...processedTokens, ...filteredBatchResults];
-      
-      const progress = Math.min(
-        ((i + PARALLEL_BATCHES) / chunks.length) * 100,
-        100
-      );
-      progressCallback?.(progress);
-      
-      setTokenList(processedTokens);
+    // Filter non-zero tokens worth more than $0.5
+    const filteredNonZeroTokens = nonZeroTokens.filter(token => {
+      const tokenValue = token.price * token.balance;
+      return tokenValue < 0.5;
+    });
 
-      if (i + PARALLEL_BATCHES < chunks.length) {
-        await sleep(RPC_DELAY);
-      }
-    }
+    return {
+      zeroTokens,
+      nonZeroTokens: filteredNonZeroTokens
+    };
 
   } catch (err) {
-    console.error("ERROR in getTokenListMoreThanZero:", err);
+    console.error("ERROR in getFilteredTokenLists:", err);
     errorAlert(err);
+    return { zeroTokens: [], nonZeroTokens: [] };
   } finally {
+    isLoading = false;
     setLoadingState(false);
   }
 }
 
+// Helper function to process tokens in batches
+async function processTokenBatches(
+  connection: Connection,
+  accounts: any[],
+  prices: Record<string, number>,
+  progressCallback?: (progress: number) => void
+): Promise<TokenInfo[]> {
+  const chunks = [];
+  for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
+    chunks.push(accounts.slice(i, i + BATCH_SIZE));
+  }
+
+  let processedTokens: TokenInfo[] = [];
+  for (let i = 0; i < chunks.length; i += PARALLEL_BATCHES) {
+    const batchChunks = chunks.slice(i, i + PARALLEL_BATCHES);
+    const batchResults = await Promise.all(
+      batchChunks.map(chunk => processBatch(connection, chunk, prices))
+    );
+    
+    processedTokens = [...processedTokens, ...batchResults.flat()];
+    
+    const progress = Math.min(
+      ((i + PARALLEL_BATCHES) / chunks.length) * 100,
+      100
+    );
+    progressCallback?.(progress);
+
+    if (i + PARALLEL_BATCHES < chunks.length) {
+      await sleep(RPC_DELAY);
+    }
+  }
+
+  return processedTokens;
+}
+
 export function forceRefreshTokens(): void {
-  console.log('Clearing token cache');
+  // console.log('Clearing token cache');
   tokenCache.clear();
 }

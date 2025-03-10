@@ -20,7 +20,7 @@ import axios from "axios";
 import { RateLimiter } from "@/utils/rate-limiter";
 import { toast } from "react-hot-toast";
 import { IoMdRefresh } from "react-icons/io";
-import { getTokenListMoreThanZero, getTokenListZeroAmount, forceRefreshTokens } from "@/utils/tokenList";
+import { forceRefreshTokens, getFilteredTokenLists } from "@/utils/tokenList";
 import { TokenInfo } from "@/types/token";
 import { cacheOperation, syncOperationsToSupabase, supabase, setupOperationSync } from '@/utils/supabase';
 import TokenListSkeleton from './TokenListSkeleton';
@@ -30,6 +30,7 @@ import { useReferral } from '@/contexts/referralContext';
 import { DEFAULT_PLATFORM_FEE, DEFAULT_REFERRAL_FEE } from '@/types/referral';
 import ReloadPopup from './ReloadPopup';
 import { SOL_PRICE_API } from "@/config";
+import { startTimer, stopTimer, measureAsync } from "@/utils/timing";
 
 const SLIPPAGE = 20;
 
@@ -59,6 +60,7 @@ interface BundleResults {
   successfulTokens: string[];
   failedTokens: string[];
   failedTransactions: VersionedTransaction[];
+  successfulSignatures: string[];
 }
 
 interface TokenStatus {
@@ -187,6 +189,7 @@ export default function Home() {
     setSwapTokenList, 
     textLoadingState,
     setTextLoadingState, 
+    loadingText,
     setLoadingText, 
     swapState, 
     setSwapState, 
@@ -248,13 +251,17 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    // Initialize connection
-    getWorkingConnection().then(connection => {
-      setSolConnection(connection);
-    }).catch(error => {
-      console.error("Failed to initialize connection:", error);
-    });
-  }, []);
+    if (publicKey) {
+      // Initialize connection first
+      getWorkingConnection().then(connection => {
+        setSolConnection(connection);
+        // Only initialize token state after connection is ready
+        initializeTokenState();
+      }).catch(error => {
+        console.error("Failed to initialize connection:", error);
+      });
+    }
+  }, [publicKey]); // Only run when publicKey changes
 
   useEffect(() => {
     if (selectedTokenList.length === tokenList.length && tokenList.length !== 0) {
@@ -350,51 +357,30 @@ export default function Home() {
     }
   }, [publicKey]);
 
-  // Update the initial state determination logic
+  // Modify initializeTokenState to use the new function
   const initializeTokenState = async () => {
     if (!publicKey) return;
     
     setTextLoadingState(true);
     try {
-      let zeroTokens = 0;
-      let nonZeroTokens = 0;
-
-      // Get counts of both types of tokens
-      await getTokenListZeroAmount(
+      const { zeroTokens, nonZeroTokens } = await getFilteredTokenLists(
         publicKey.toString(),
-        (tokens) => { zeroTokens = tokens.length },
-        setTextLoadingState
+        setTextLoadingState,
+        setLoadingProgress
       );
 
-      await getTokenListMoreThanZero(
-        publicKey.toString(),
-        (tokens) => { nonZeroTokens = tokens.length },
-        setTextLoadingState
-      );
-
-      console.log('Initial token counts:', { zeroTokens, nonZeroTokens });
-
-      // Modified logic: If both sections have tokens, prioritize close account section
-      const shouldBeInSwapState = nonZeroTokens > 0 && zeroTokens === 0;
+      // Set state based on token counts
+      const shouldBeInSwapState = nonZeroTokens.length > 0 && zeroTokens.length === 0;
       setSwapState(shouldBeInSwapState);
 
-      // Load the appropriate token list
-      if (shouldBeInSwapState) {
-        await getTokenListMoreThanZero(
-          publicKey.toString(),
-          setTokenList,
-          setTextLoadingState
-        );
-      } else {
-        await getTokenListZeroAmount(
-          publicKey.toString(),
-          setTokenList,
-          setTextLoadingState
-        );
-      }
+      // Set the appropriate token list
+      setTokenList(shouldBeInSwapState ? nonZeroTokens : zeroTokens);
 
       // Update token counts state
-      setTokenCounts({ zero: zeroTokens, nonZero: nonZeroTokens });
+      setTokenCounts({
+        zero: zeroTokens.length,
+        nonZero: nonZeroTokens.length
+      });
     } catch (error) {
       console.error('Error initializing token state:', error);
     } finally {
@@ -447,6 +433,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     const failedTransactions: VersionedTransaction[] = [];
     const successfulTokens: string[] = [];
     const failedTokens: string[] = [];
+    const allSignatures: string[] = [];
     const promises = [];
 
     const tokenStatusMap = new Map<string, TokenStatus>();
@@ -534,7 +521,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                   // Success notification only if we haven't already processed this token
                   if (!processedTokens.has(tokens[j + idx].id)) {
                     processedTokens.add(tokens[j + idx].id);
-                    successAlert(`Successfully processing ${tokens[j + idx].symbol}`);
+                    // successAlert(`Successfully processing ${tokens[j + idx].symbol}`);
                   }
                 }
               }
@@ -592,10 +579,16 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
       }))
     );
 
+    // Remove duplicates from arrays
+    const uniqueSuccessfulTokens = Array.from(new Set(successfulTokens));
+    const uniqueFailedTokens = Array.from(new Set(failedTokens));
+    const uniqueSignatures = Array.from(new Set(allSignatures));
+
     return {
-      successfulTokens,
-      failedTokens,
-      failedTransactions
+      successfulTokens: uniqueSuccessfulTokens,
+      failedTokens: uniqueFailedTokens,
+      failedTransactions,
+      successfulSignatures: uniqueSignatures
     };
   }
 
@@ -694,6 +687,24 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           });
           setShowReloadPopup(true);
           successAlert(`You've been Reload your SOL`);
+          
+          // Get the last successful signature for refresh
+          const lastSignature = closeResults.successfulSignatures?.[closeResults.successfulSignatures.length - 1];
+          if (lastSignature) {
+            setLoadingText("Refreshing token list...");
+            // Force clear cache before refresh
+            forceRefreshTokens();
+            
+            // Wait for transaction to be confirmed and fetch fresh data
+            await refreshTokenList(lastSignature);
+            
+            // Double-check if we need another refresh
+            const currentList = swapState ? tokenCounts.nonZero : tokenCounts.zero;
+            if (currentList === tokenList.length) {
+              console.log("Token list might not be updated, trying again...");
+              await refreshTokenList(lastSignature);
+            }
+          }
         }
         if (closeResults.failedTokens.length > 0) {
           warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
@@ -703,9 +714,6 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
       console.error("Error during close:", error);
       warningAlert(error?.message || "Failed to close accounts");
     } finally {
-      setLoadingText("Refreshing token list...");
-      await sleep(5000); // Add 5 second delay before refresh
-      await refreshTokenList();
       setLoadingText("");
       setTextLoadingState(false);
     }
@@ -720,80 +728,153 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
 
     setLoadingText("Preparing transactions...");
     setTextLoadingState(true);
+    
+    // Start overall timer
+    startTimer("Total Swap Process");
 
     try {
-      // Step 1: Prepare all swap transactions first
+      // Step 1: Prepare all swap transactions with parallel processing
+      startTimer("Swap Preparation");
       const swapBundle: VersionedTransaction[] = [];
-      const rateLimiter = new RateLimiter(2);
-
-      // Collect all swap transactions
-      for (const token of selectedTokens) {
-        try {
-          console.log(`Preparing swap for ${token.id}`);
-          const quoteResponse = await rateLimiter.schedule(async () => {
-            const response = await fetch(
-              `https://swap-v2.solanatracker.io/rate?` + new URLSearchParams({
-                from: token.id,
-                to: NATIVE_MINT.toBase58(),
-                amount: token.amount.toString(),
-                slippage: SLIPPAGE.toString()
+      const failedTokens: string[] = [];
+      const tokenMap = new Map<string, SelectedTokens>(); // Map token IDs to their data
+      
+      // Create a more efficient rate limiter - 10 requests per second
+      const rateLimiter = new RateLimiter(10);
+      
+      // Map tokens for easier lookup
+      selectedTokens.forEach(token => tokenMap.set(token.id, token));
+      
+      // Create batches of tokens for processing
+      const BATCH_SIZE = 5; // Process 5 tokens at a time
+      const batches: SelectedTokens[][] = [];
+      
+      for (let i = 0; i < selectedTokens.length; i += BATCH_SIZE) {
+        batches.push(selectedTokens.slice(i, i + BATCH_SIZE));
+      }
+      
+      // Process each batch
+      let processedCount = 0;
+      for (const batch of batches) {
+        startTimer(`Batch ${processedCount}-${processedCount + batch.length}`);
+        setLoadingText(`Preparing swaps for ${selectedTokens.length} tokens...`);
+        
+        // Process this batch in parallel
+        const batchResults = await Promise.all(batch.map(async (token) => {
+          try {
+            console.log(`Preparing swap for ${token.id}`);
+            
+            // First get the quote
+            // const quoteResponse = await measureAsync(`Quote for ${token.symbol}`, () => 
+            //   rateLimiter.schedule(async () => {
+            //     const response = await fetch(
+            //       `https://swap-v2.solanatracker.io/rate?` + new URLSearchParams({
+            //         from: token.id,
+            //         to: NATIVE_MINT.toBase58(),
+            //         amount: token.amount.toString(),
+            //         slippage: SLIPPAGE.toString()
+            //       })
+            //     );
+                
+            //     if (!response.ok) throw new Error(`Quote failed: ${response.statusText}`);
+            //     return response.json();
+            //   })
+            // );
+              
+            // Then get the swap transaction
+            const swapResponse = await measureAsync(`Swap TX for ${token.symbol}`, () => 
+              rateLimiter.schedule(async () => {
+                const response = await fetch("https://swap-v2.solanatracker.io/swap", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    from: token.id,
+                    to: NATIVE_MINT.toBase58(),
+                    amount: token.amount,
+                    slippage: SLIPPAGE,
+                    payer: wallet.publicKey?.toBase58(),
+                    priorityFee: 0.0005,
+                    feeType: "add",
+                    fee: "3V3N5xh6vUUVU3CnbjMAXoyXendfXzXYKzTVEsFrLkgX:0.1"
+                  })
+                });
+                
+                if (!response.ok) throw new Error(`Swap request failed: ${response.statusText}`);
+                return response.json();
               })
             );
-
-            if (!response.ok) throw new Error(`Quote failed: ${response.statusText}`);
-            return await response.json();
-          });
-
-          const swapResponse = await rateLimiter.schedule(async () => {
-            const response = await fetch("https://swap-v2.solanatracker.io/swap", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                from: token.id,
-                to: NATIVE_MINT.toBase58(),
-                amount: token.amount,
-                slippage: SLIPPAGE,
-                payer: wallet.publicKey?.toBase58(),
-                priorityFee: 0.0005,
-                feeType: "add",
-                fee: "3V3N5xh6vUUVU3CnbjMAXoyXendfXzXYKzTVEsFrLkgX:0.1"
-              })
-            });
-
-            if (!response.ok) throw new Error(`Swap request failed: ${response.statusText}`);
-            return await response.json();
-          });
-
-          if (swapResponse.txn) {
-            const tx = VersionedTransaction.deserialize(Buffer.from(swapResponse.txn, 'base64'));
-            swapBundle.push(tx);
+            
+            // Process the swap transaction
+            if (swapResponse.txn) {
+              const tx = VersionedTransaction.deserialize(Buffer.from(swapResponse.txn, 'base64'));
+              return { success: true, tokenId: token.id, tx };
+            } else {
+              throw new Error("No transaction returned from swap API");
+            }
+          } catch (error) {
+            console.error(`Failed to prepare swap for ${token.id}:`, error);
+            return { success: false, tokenId: token.id, error };
           }
-        } catch (error) {
-          console.error(`Failed to prepare swap for ${token.id}:`, error);
+        }));
+        
+        // Process batch results
+        for (const result of batchResults) {
+          if (result.success && result.tx) {
+            swapBundle.push(result.tx);
+          } else {
+            failedTokens.push(result.tokenId);
+          }
         }
+        
+        processedCount += batch.length;
+        stopTimer(`Batch ${processedCount - batch.length}-${processedCount}`);
       }
+      
+      // Log any failed tokens
+      if (failedTokens.length > 0) {
+        console.warn(`Failed to prepare swaps for ${failedTokens.length} tokens:`, failedTokens);
+      }
+      
+      stopTimer("Swap Preparation");
+      console.log(`Prepared ${swapBundle.length}/${selectedTokens.length} swap transactions`);
 
       // Step 2: Execute swap bundle
       if (swapBundle.length > 0) {
-        const { blockhash, lastValidBlockHeight } = await solConnection.getLatestBlockhash('confirmed');
+        setLoadingText(`Prepared ${swapBundle.length} swap transactions. Getting blockhash...`);
         
+        const { blockhash, lastValidBlockHeight } = await measureAsync("Get Blockhash", () => 
+          solConnection.getLatestBlockhash('confirmed')
+        );
+        
+        startTimer("Update Blockhash");
         const updatedSwapBundle = swapBundle.map(tx => {
           const newTx = new VersionedTransaction(tx.message);
           newTx.message.recentBlockhash = blockhash;
           return newTx;
         });
+        stopTimer("Update Blockhash");
         
         setLoadingText("Signing swap transactions...");
-        const signedSwapBundle = await wallet.signAllTransactions(updatedSwapBundle);
+        const signedSwapBundle = await measureAsync("Sign Transactions", () => {
+          if (!wallet.signAllTransactions) {
+            throw new Error("Wallet does not support signing transactions");
+          }
+          return wallet.signAllTransactions(updatedSwapBundle);
+        });
+        
+        // Filter selectedTokens to only include those that were successfully prepared
+        const tokensToProcess = selectedTokens.filter(token => !failedTokens.includes(token.id));
         
         setLoadingText("Processing swaps...");
-        const swapResults = await sendTransactions(
-          signedSwapBundle, 
-          selectedTokens,
-          solConnection,
-          blockhash,
-          lastValidBlockHeight,
-          'swap'
+        const swapResults = await measureAsync("Process Swaps", () => 
+          sendTransactions(
+            signedSwapBundle, 
+            tokensToProcess,
+            solConnection,
+            blockhash,
+            lastValidBlockHeight,
+            'swap'
+          )
         );
 
         // Track successful swaps
@@ -809,25 +890,36 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             token => swapResults.successfulTokens.includes(token.id)
           );
           
-          const closeBundle = await createCloseAccountBundle(
-            tokensToClose, 
-            wallet, 
-            solConnection,
-            blockhash
+          const closeBundle = await measureAsync("Create Close Bundle", () => 
+            createCloseAccountBundle(
+              tokensToClose, 
+              wallet, 
+              solConnection,
+              blockhash
+            )
           );
           
           if (closeBundle.length > 0) {
-            setLoadingText("Signing close transactions...");
-            const signedCloseBundle = await wallet.signAllTransactions(closeBundle);
+            setLoadingText("Signing Reload transactions...");
+
             
-            setLoadingText("Processing closes...");
-            const closeResults = await sendTransactions(
-              signedCloseBundle, 
-              tokensToClose,
-              solConnection,
-              blockhash,
-              lastValidBlockHeight,
-              'close'
+            const signedCloseBundle = await measureAsync("Sign Reload Transactions", () => {
+              if (!wallet.signAllTransactions) {
+                throw new Error("Wallet does not support signing transactions");
+              }
+              return wallet.signAllTransactions(closeBundle);
+            });
+            
+            setLoadingText("Processing Reload...");
+            const closeResults = await measureAsync("Process Reloads", () => 
+              sendTransactions(
+                signedCloseBundle, 
+                tokensToClose,
+                solConnection,
+                blockhash,
+                lastValidBlockHeight,
+                'close'
+              )
             );
 
             // Track successful operations
@@ -849,23 +941,43 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                 dustValue: dustValue
               });
               setShowReloadPopup(true);
-              successAlert(`Successfully processed: ${closeResults.successfulTokens.length} tokens`);
+              successAlert(`Successfully Reload your SOL!`);
+              
+              // Get the last successful signature for refresh
+              const lastSignature = closeResults.successfulSignatures?.[closeResults.successfulSignatures.length - 1];
+              if (lastSignature) {
+                setLoadingText("Refreshing token list...");
+                // Force clear cache before refresh
+                forceRefreshTokens();
+                
+                // Wait for transaction to be confirmed and fetch fresh data
+                await measureAsync("Refresh Token List", () => 
+                  refreshTokenList(lastSignature)
+                );
+                
+                // Double-check if we need another refresh
+                const currentList = swapState ? tokenCounts.nonZero : tokenCounts.zero;
+                if (currentList === tokenList.length) {
+                  console.log("Token list might not be updated, trying again...");
+                  await measureAsync("Second Refresh Attempt", () => 
+                    refreshTokenList(lastSignature)
+                  );
+                }
+              }
             }
             if (closeResults.failedTokens.length > 0) {
               warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
             }
           }
         }
+      } else {
+        warningAlert("No swap transactions could be prepared. Please try again.");
       }
-
-      // Add 5 second delay before refresh
-      setLoadingText("Refreshing token list...");
-      await sleep(5000);
-      await refreshTokenList();
     } catch (err) {
       console.error("Error during swap process:", err);
       warningAlert("Some operations failed. Please check the console for details.");
     } finally {
+      stopTimer("Total Swap Process");
       setLoadingText("");
       setTextLoadingState(false);
     }
@@ -909,102 +1021,29 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     }
   };
 
-  function filterTokenAccounts(accounts: any[], targetMint: string, targetOwner: string): Array<{ pubkey: string; mint: string }> {
-    return accounts
-      .filter(account => {
-        return (
-          account.account.data.parsed.info.mint === targetMint
-        );
-      })
-      .map(account => ({
-        pubkey: account.pubkey,
-        mint: account.account.data.parsed.info.mint
-      }));
-  }
-
-  const getWalletTokeBalance = async () => {
-    if (publicKey === null) {
-      return;
-    }
-    const tokeAmount = await walletScan(publicKey?.toString());
-    console.log('toke amount ===> ', tokeAmount)
-    setTokeBalance(tokeAmount);
-  }
-
-  const swappedTokenNotify = async (mintAddress: string) => {
-    let newFilterList: any[] = [];
-    let newTokenList: any[] = [];
-    let newSwapList: any[] = [];
-    let newSelectedList: any[] = [];
-
-    newTokenList = await tokenList.filter((item: { id: string; }) => item.id !== mintAddress);
-    setTokenList(newTokenList)
-
-    await sleep(15000);
-    await getWalletTokeBalance();
-  }
-
   const changeMethod = async () => {
     setSelectedTokenList([]);
     
     if (publicKey) {
       setTextLoadingState(true);
       try {
-        // Check both lists
-        let zeroTokens = 0;
-        let nonZeroTokens = 0;
-
-        // Get zero amount tokens
-        await getTokenListZeroAmount(
+        // Fetch both token lists
+        const { zeroTokens, nonZeroTokens } = await getFilteredTokenLists(
           publicKey.toString(),
-          (tokens) => { zeroTokens = tokens.length },
-          setTextLoadingState
+          setTextLoadingState,
+          setLoadingProgress
         );
 
-        // Get non-zero amount tokens
-        await getTokenListMoreThanZero(
-          publicKey.toString(),
-          (tokens) => { nonZeroTokens = tokens.length },
-          setTextLoadingState
-        );
+        // Simply toggle the state and set appropriate token list
+        const newState = !swapState;
+        setSwapState(newState);
+        setTokenList(newState ? nonZeroTokens : zeroTokens);
 
-        console.log('Token counts:', { zeroTokens, nonZeroTokens, currentState: swapState });
-
-        // If no tokens in current section, switch to the other if it has tokens
-        if (swapState && nonZeroTokens === 0 && zeroTokens > 0) {
-          // Currently in swap (non-zero) but no tokens, switch to zero if available
-          setSwapState(false);
-          await getTokenListZeroAmount(
-            publicKey.toString(),
-            setTokenList,
-            setTextLoadingState
-          );
-        } else if (!swapState && zeroTokens === 0 && nonZeroTokens > 0) {
-          // Currently in zero but no tokens, switch to non-zero if available
-          setSwapState(true);
-          await getTokenListMoreThanZero(
-            publicKey.toString(),
-            setTokenList,
-            setTextLoadingState
-          );
-        } else {
-          // Normal toggle behavior when both lists have tokens
-          const newState = !swapState;
-          setSwapState(newState);
-          if (newState) {
-            await getTokenListMoreThanZero(
-              publicKey.toString(),
-              setTokenList,
-              setTextLoadingState
-            );
-          } else {
-            await getTokenListZeroAmount(
-              publicKey.toString(),
-              setTokenList,
-              setTextLoadingState
-            );
-          }
-        }
+        // Update token counts
+        setTokenCounts({
+          zero: zeroTokens.length,
+          nonZero: nonZeroTokens.length
+        });
       } catch (error) {
         console.error('Error changing token list:', error);
       } finally {
@@ -1013,66 +1052,47 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     }
   };
 
-  const updateTokenList = async () => {
-    if (!publicKey) return;
-    setLoadingProgress(0);
-    await getTokenListMoreThanZero(
-      publicKey.toString(), 
-      setTokenList, 
-      setTextLoadingState,
-      (progress) => setLoadingProgress(progress)
-    );
-  };
-
-  const refreshTokenList = async () => {
+  const refreshTokenList = async (lastSignature?: string) => {
     if (!publicKey || isRefreshing || !wallet) return;
     
     setIsRefreshing(true);
+    setLoadingText("Refreshing token list...");
+    
     try {
-      // Force refresh tokens to clear cache
-      forceRefreshTokens();
-      
-      console.log('Refreshing token list with forced cache clear');
+      // If we have a signature, wait for confirmation first
+      if (lastSignature && solConnection) {
+        console.log(`Waiting for transaction confirmation: ${lastSignature}`);
+        const { blockhash } = await solConnection.getLatestBlockhash();
+        
+        await solConnection.confirmTransaction({
+          signature: lastSignature,
+          blockhash,
+          lastValidBlockHeight: await solConnection.getBlockHeight()
+        }, 'confirmed');
 
-      // Check both lists first
-      let zeroTokens: TokenInfo[] = [];
-      let nonZeroTokens: TokenInfo[] = [];
-      
-      // Get both lists in parallel
-      await Promise.all([
-        getTokenListZeroAmount(
-          publicKey.toString(),
-          (tokens) => { zeroTokens = tokens; },
-          setTextLoadingState
-        ),
-        getTokenListMoreThanZero(
-          publicKey.toString(),
-          (tokens) => { nonZeroTokens = tokens; },
-          setTextLoadingState,
-          (progress) => setLoadingProgress(progress)
-        )
-      ]);
-
-      console.log('Token counts after refresh:', {
-        zeroTokens: zeroTokens.length,
-        nonZeroTokens: nonZeroTokens.length,
-        currentState: swapState
-      });
-
-      // Determine which section to show based on available tokens
-      if (swapState && nonZeroTokens.length === 0 && zeroTokens.length > 0) {
-        // Currently in swap (non-zero) but no tokens, switch to zero if available
-        setSwapState(false);
-        setTokenList(zeroTokens);
-      } else if (!swapState && zeroTokens.length === 0 && nonZeroTokens.length > 0) {
-        // Currently in zero but no tokens, switch to non-zero if available
-        setSwapState(true);
-        setTokenList(nonZeroTokens);
-      } else {
-        // Stay in current section but update the list
-        setTokenList(swapState ? nonZeroTokens : zeroTokens);
+        // Verify transaction success
+        const txInfo = await solConnection.getTransaction(lastSignature, {
+          commitment: 'confirmed',
+          maxSupportedTransactionVersion: 0
+        });
+        
+        if (txInfo?.meta?.err) {
+          throw new Error('Transaction failed after confirmation');
+        }
       }
 
+      // Clear cache and fetch fresh data
+      forceRefreshTokens();
+      
+      const { zeroTokens, nonZeroTokens } = await getFilteredTokenLists(
+        publicKey.toString(),
+        setTextLoadingState,
+        setLoadingProgress
+      );
+
+      // Update the current section's token list without switching
+      setTokenList(swapState ? nonZeroTokens : zeroTokens);
+      
       // Update token counts
       setTokenCounts({
         zero: zeroTokens.length,
@@ -1081,7 +1101,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
 
       // Clear selection
       setSelectedTokenList([]);
-
+      
       successAlert("Token list refreshed");
     } catch (error) {
       console.error('Refresh error:', error);
@@ -1175,7 +1195,9 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
 
       // Add 5 second delay before refresh
       setLoadingText("Refreshing token list...");
-      await sleep(5000);
+      await sleep(2000); // Initial delay for blockchain state update
+      forceRefreshTokens(); // Force clear cache
+      await sleep(3000); // Additional delay to ensure fresh state
       await refreshTokenList();
     } catch (error: any) {
       console.error("Error during transfer:", error);
@@ -1365,7 +1387,9 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
 
       // Add 5 second delay before refresh
       setLoadingText("Refreshing token list...");
-      await sleep(5000);
+      await sleep(2000); // Initial delay for blockchain state update
+      forceRefreshTokens(); // Force clear cache
+      await sleep(3000); // Additional delay to ensure fresh state
       await refreshTokenList();
     } catch (error: any) {
       console.error("Error during ATA creation:", error);
@@ -1448,6 +1472,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     const failedTransactions: VersionedTransaction[] = [];
     const successfulTokens: string[] = [];
     const failedTokens: string[] = [];
+    const allSignatures: string[] = [];
     const promises = [];
     const confirmationPromises: Promise<void>[] = [];
 
@@ -1505,7 +1530,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                     } else {
                       tokenStatusMap.get(tokens[j + idx].id)!.status = 'success';
                       successfulTokens.push(tokens[j + idx].id);
-                      successAlert(`Successfully processed ${tokens[j + idx].symbol}`);
+                      // successAlert(`Successfully processed ${tokens[j + idx].symbol}`);
                     }
                   }
                 } catch (error: any) {
@@ -1609,11 +1634,13 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     // Remove duplicates from arrays
     const uniqueSuccessfulTokens = Array.from(new Set(successfulTokens));
     const uniqueFailedTokens = Array.from(new Set(failedTokens));
+    const uniqueSignatures = Array.from(new Set(allSignatures));
 
     return {
       successfulTokens: uniqueSuccessfulTokens,
       failedTokens: uniqueFailedTokens,
-      failedTransactions
+      failedTransactions,
+      successfulSignatures: uniqueSignatures
     };
   }
 
@@ -1657,23 +1684,29 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           <div className="w-full flex justify-between flex-col sm2:flex-row items-center h-full px-4 border-b-[1px] border-b-white pb-4">
             <div className="text-white text-md mb-2 sm2:mb-0">
               <div className="relative group">
-                <span className="hover:text-gray-300 transition-colors">
-                  You have around <span className="font-bold">
-                    {swapState ? (
-                      <>
-                        ~{((tokenList?.length || 0) * 0.001) + (calculateTotalValue(tokenList))} SOL
-                      </>
-                    ) : (
-                      <>
-                        {(tokenList?.length || 0) * 0.001} SOL
-                      </>
-                    )}
-                  </span> to reload 🚀
-                </span>
-                <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 px-3 py-2 bg-black text-white text-xs rounded border border-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 w-full">
-                  💎 <a href="https://t.me/+qIpGWaw6bXwzMWVl" target="_blank" rel="noopener noreferrer" className="hover:text-gray-300 transition-colors">Join our community here</a> 💎 
-                  <br /> and be a part of IYKYK! 😉
-                  <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-1 border-l-4 border-r-4 border-b-4 border-b-black border-l-transparent border-r-transparent"></div>
+                {textLoadingState ? (
+                  <span className="flex items-center gap-2">
+                    <IoMdRefresh className="w-4 h-4 animate-spin" />
+                    <span>{loadingText || "Processing..."}</span>
+                  </span>
+                ) : (
+                  <span className="hover:text-gray-300 transition-colors">
+                    You have around <span className="font-bold">
+                      {swapState ? (
+                        <>
+                          ~{((tokenList?.length || 0) * 0.001) + (calculateTotalValue(tokenList))} SOL
+                        </>
+                      ) : (
+                        <>
+                          {(tokenList?.length || 0) * 0.001} SOL
+                        </>
+                      )}
+                    </span> to reload 🚀
+                  </span>
+                )}
+                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-2 bg-black text-white text-xs rounded border border-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 w-full">
+                  💎 <a href="https://t.me/+qIpGWaw6bXwzMWVl" target="_blank" rel="noopener noreferrer" className="hover:text-gray-300 transition-colors">Join our community here</a> 💎 and be a part of something BIG! 😉
+                  <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1 border-l-4 border-r-4 border-t-4 border-t-black border-l-transparent border-r-transparent"></div>
                 </div>
               </div>
             </div>
@@ -1705,6 +1738,60 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             </div>
           </div>
           <div className="w-full flex flex-col px-2">
+            <div className="w-full px-4 mb-4 flex items-center gap-4">
+              <span className="text-white">Quick select:</span>
+              <div className="flex gap-2">
+                {[
+                  { count: 5, label: '5' },
+                  { count: 10, label: '10' },
+                  { count: Math.min(tokenList?.length || 0, MAX_TOKENS_PER_BATCH), label: 'Max' }
+                ]
+                .filter(option => option.count <= (tokenList?.length || 0)) // Only show options if there are enough tokens
+                .map(({ count, label }) => (
+                  <button
+                    key={label}
+                    onClick={() => {
+                      // Get first 'count' tokens from the list
+                      const tokensToSelect = tokenList.slice(0, Math.min(count, MAX_TOKENS_PER_BATCH));
+                      
+                      // Map tokens based on whether it's a swap or close operation
+                      const selectedTokens = tokensToSelect.map((token: any) => ({
+                        id: token.id,
+                        amount: token.balance,
+                        symbol: token.symbol,
+                        value: swapState ? token.price * token.balance : 0, // Only include value for swap operations
+                      }));
+                      
+                      setSelectedTokenList(selectedTokens);
+                      setAllSelectedFlag(count === Math.min(tokenList.length, MAX_TOKENS_PER_BATCH));
+                      
+                      // Show warning if trying to select more than MAX_TOKENS_PER_BATCH
+                      if (tokenList.length > MAX_TOKENS_PER_BATCH && label === 'Max') {
+                        warningAlert(`Selected first ${MAX_TOKENS_PER_BATCH} tokens. Process these before selecting more.`);
+                      }
+                    }}
+                    className={`px-4 py-1 rounded border ${
+                      selectedTokenList.length === count
+                        ? 'bg-white text-black'
+                        : 'border-white text-white hover:bg-white hover:text-black'
+                    } transition-colors text-sm`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {selectedTokenList.length > 0 && (
+                <button
+                  onClick={() => {
+                    setSelectedTokenList([]);
+                    setAllSelectedFlag(false);
+                  }}
+                  className="text-white/70 hover:text-white text-sm"
+                >
+                  Clear selection
+                </button>
+              )}
+            </div>
             <div className="w-full h-[400px] px-4 relative object-cover overflow-hidden overflow-y-scroll">
               <div className="relative overflow-x-auto shadow-md sm:rounded-lg">
                 {textLoadingState ? (
@@ -1730,8 +1817,16 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                     </tbody>
                   </table>
                 ) : tokenList?.length < 1 ? (
-                  <div className="h-[360px] flex flex-col justify-center items-center text-white text-xl font-bold px-4">
-                    No tokens to {swapState ? "Swap" : "Remove"}
+                  <div className="h-[360px] flex flex-col justify-center items-center text-white gap-4">
+                    <div className="text-xl font-bold">
+                      No tokens to {swapState ? "Swap" : "Remove"}
+                    </div>
+                    <button
+                      onClick={changeMethod}
+                      className="px-6 py-2 border border-white rounded-full hover:bg-white hover:text-black transition-colors"
+                    >
+                      Switch to {swapState ? "Remove" : "Swap"} Section
+                    </button>
                   </div>
                 ) : (
                   <>
@@ -1944,6 +2039,10 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           )}
           {textLoadingState && (
             <div className="w-full max-w-4xl mx-auto mt-2">
+              <div className="flex items-center justify-center mb-2 text-white">
+                <IoMdRefresh className="w-4 h-4 animate-spin mr-2" />
+                <span>{loadingText || "Processing..."}</span>
+              </div>
               <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
                 <div 
                   className="bg-white h-2.5 rounded-full transition-all duration-300" 

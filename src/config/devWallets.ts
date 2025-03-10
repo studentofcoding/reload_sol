@@ -6,6 +6,5 @@ export const devWallets = [
 
 export const isDevWallet = (address: string): boolean => {
   const isDev = devWallets.includes(address);
-  console.log('Checking dev wallet:', { address, isDev, devWallets });
   return isDev;
 };

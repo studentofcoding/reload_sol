@@ -4,7 +4,6 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { ArrowLine, ExitIcon, WalletIcon } from "./SvgIcon";
 import UserContext from "@/contexts/usercontext";
-import { getTokenListZeroAmount, getTokenListMoreThanZero, forceRefreshTokens } from "@/utils/tokenList";
 import { Connection } from "@solana/web3.js";
 import { updateWalletBalance } from "@/utils/supabase";
 import LoadingSpinner from "./LoadingSpinner";
@@ -13,31 +12,11 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // 1 second delay between retries
 
 const ConnectButton: FC = () => {
-  const { setTokenList, setLoadingState, swapState } = useContext<any>(UserContext);
+  const { setTokenList, setLoadingState, swapState, setSwapState, setTokenCounts } = useContext<any>(UserContext);
   const { setVisible } = useWalletModal();
   const { publicKey, disconnect } = useWallet();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-
-  useEffect(() => {
-    if (publicKey?.toBase58() !== "" && publicKey?.toBase58() !== undefined) {
-      setIsLoading(true);
-      const loadTokens = async () => {
-        try {
-          if (swapState) {
-            await getTokenListMoreThanZero(publicKey.toBase58(), setTokenList, setLoadingState, forceRefreshTokens);
-          } else {
-            await getTokenListZeroAmount(publicKey.toBase58(), setTokenList, setLoadingState, forceRefreshTokens);
-          }
-        } catch (error) {
-          console.error('Error loading tokens:', error);
-        } finally {
-          setIsLoading(false);
-        }
-      };
-      loadTokens();
-    }
-  }, [publicKey, swapState, setTokenList, setLoadingState]);
 
   useEffect(() => {
     if (publicKey) {

@@ -10,6 +10,17 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   }
 });
 
+export const adminSupabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  }
+);
+
 interface TokenOperations {
   wallet_address: string;
   close_count: number;

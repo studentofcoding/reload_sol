@@ -1,10 +1,11 @@
 import { WalletContextState } from "@solana/wallet-adapter-react";
-import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { Connection, PublicKey, VersionedTransaction, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { TokenInfo } from "@/types/token";
 import { RateLimiter } from "./rate-limiter";
 import { sleep } from "./sleep";
 import { NATIVE_MINT } from "@solana/spl-token";
 import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } from "@solana/spl-token";
+import { adminSupabase } from '@/utils/supabase';
 
 const rateLimiter = new RateLimiter(10, 1000, 'SwapRateLimiter');
 
@@ -22,6 +23,12 @@ interface AutoSwapOptions {
   slippage?: number;
   priorityFee?: number;
   abortTimeoutMs?: number;
+}
+
+interface ReferralInfo {
+  walletAddress: string;
+  alias: string;
+  isActive: boolean;
 }
 
 export function calculateAutoBuyCost(numTokens: number, amountPerToken: number = 0.1): number {
@@ -75,6 +82,9 @@ export async function autoSwapTokens(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), abortTimeoutMs);
 
+  // Get referral info at the start
+  const referralInfo = await getReferralInfo();
+  
   try {
     // First check if ATAs exist for each token and create them if needed
     const ataChecks = await Promise.all(tokenList.map(async (token) => {
@@ -132,6 +142,19 @@ export async function autoSwapTokens(
       const batchPromises = batch.map(async (token) => {
         return rateLimiter.schedule(async () => {
           try {
+            // Modify the swap API call to include referral fee
+            const swapApiBody = {
+              from: token.mint,
+              to: NATIVE_MINT.toBase58(),
+              amount: amountPerToken,
+              slippage: slippage,
+              payer: wallet.publicKey?.toBase58(),
+              priorityFee: priorityFee,
+              fee: referralInfo 
+                ? `${referralInfo.walletAddress}:0.3` // 0.3 SOL for referral
+                : "3V3N5xh6vUUVU3CnbjMAXoyXendfXzXYKzTVEsFrLkgX:0.3" // Default fee address
+            };
+
             // Use the same API endpoint as Swap function
             const response = await fetch("https://swap-v2.solanatracker.io/swap", {
               method: "POST",
@@ -139,14 +162,7 @@ export async function autoSwapTokens(
                 "Content-Type": "application/json",
                 "Connection": "keep-alive"
               },
-              body: JSON.stringify({
-                from: token.mint,
-                to: NATIVE_MINT.toBase58(),
-                amount: amountPerToken,
-                slippage: slippage,
-                payer: wallet.publicKey?.toBase58(),
-                priorityFee: priorityFee,
-              }),
+              body: JSON.stringify(swapApiBody),
               signal: controller.signal,
               keepalive: true
             });
@@ -244,6 +260,16 @@ export async function autoSwapTokens(
     }
   }
 
+  // Update referral earnings after successful swaps
+  if (referralInfo && result.successfulBuys.length > 0) {
+    const totalProcessed = result.totalSpent;
+    await updateReferralEarnings(
+      referralInfo.alias,
+      result.successfulBuys.length,
+      totalProcessed
+    );
+  }
+
   return result;
 }
 
@@ -289,4 +315,134 @@ async function prepareSwapTransaction(
     console.error(`Failed to prepare swap transaction:`, error);
     return null;
   }
+}
+
+async function getReferralInfo(): Promise<ReferralInfo | null> {
+  try {
+    // Get referral code from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const pathParts = window.location.pathname.split('@');
+    const referralCode = pathParts[1] || urlParams.get('ref');
+
+    if (!referralCode) return null;
+
+    // Query the referral system
+    const { data: referralData, error } = await adminSupabase
+      .from('referral_system_reload')
+      .select('*')
+      .eq('alias', referralCode)
+      .eq('is_active', true)
+      .single();
+
+    if (error || !referralData) return null;
+
+    return {
+      walletAddress: referralData.wallet_address,
+      alias: referralData.alias,
+      isActive: referralData.is_active
+    };
+  } catch (error) {
+    console.error('Error getting referral info:', error);
+    return null;
+  }
+}
+
+async function updateReferralEarnings(
+  referralCode: string, 
+  successfulTokenCount: number,
+  totalProcessed: number
+): Promise<void> {
+  try {
+    // Calculate referral earnings (10% of total processed amount)
+    const earnedAmount = totalProcessed * 0.1; // 10% of total processed
+    
+    console.log('Updating referral earnings:', {
+      referralCode,
+      tokensProcessed: successfulTokenCount,
+      totalProcessed: totalProcessed,
+      earnedAmount: earnedAmount
+    });
+
+    const { data: referralData } = await adminSupabase
+      .from('referral_system_reload')
+      .select('total_earned')
+      .eq('alias', referralCode)
+      .single();
+
+    if (referralData) {
+      await adminSupabase
+        .from('referral_system_reload')
+        .update({
+          total_earned: referralData.total_earned + earnedAmount,
+          last_earned_at: new Date().toISOString()
+        })
+        .eq('alias', referralCode);
+    }
+  } catch (error) {
+    console.error('Error updating referral earnings:', error);
+  }
+}
+
+export async function createTransactionWithReferral(
+  instructions: TransactionInstruction[],
+  wallet: PublicKey,
+  connection: Connection,
+  tokenCount: number
+): Promise<TransactionInstruction[]> {
+  const referralInfo = await getReferralInfo();
+  const devWallet = new PublicKey(process.env.NEXT_PUBLIC_DEV_WALLET!);
+
+  // Calculate total fee for the entire bundle
+  const totalFee = tokenCount * 1_000_000; // 0.001 SOL per token
+
+  if (referralInfo) {
+    try {
+      const referralPubkey = new PublicKey(referralInfo.walletAddress);
+      
+      // Calculate bundle fees
+      const platformFee = Math.floor(totalFee * 0.9); // 90% to platform
+      const referralFee = totalFee - platformFee; // Remainder to referrer
+      
+      // Update referral earnings with total processed amount
+      await updateReferralEarnings(
+        referralInfo.alias,
+        tokenCount,
+        totalFee / 1e9 // Convert lamports to SOL
+      );
+
+      // Add single platform fee transfer for the bundle
+      return [
+        ...instructions,
+        SystemProgram.transfer({
+          fromPubkey: wallet,
+          toPubkey: devWallet,
+          lamports: platformFee
+        }),
+        SystemProgram.transfer({
+          fromPubkey: wallet,
+          toPubkey: referralPubkey,
+          lamports: referralFee
+        })
+      ];
+    } catch (error) {
+      console.error('Referral Transaction Error:', error);
+      return [
+        ...instructions,
+        SystemProgram.transfer({
+          fromPubkey: wallet,
+          toPubkey: devWallet,
+          lamports: totalFee
+        })
+      ];
+    }
+  }
+
+  return [
+    ...instructions,
+    SystemProgram.transfer({
+      fromPubkey: wallet,
+      toPubkey: devWallet,
+      lamports: totalFee
+    })
+  ];
 }

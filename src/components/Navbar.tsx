@@ -34,6 +34,7 @@ import { startTimer, stopTimer, measureAsync } from "@/utils/timing";
 import { autoSwapTokens } from "@/utils/transactions";
 import { isDevWallet } from "@/config/devWallets";
 import ChangeLog from './ChangeLog';
+import { createTransactionWithReferral } from '@/utils/transactions';
 
 const SLIPPAGE = 20;
 
@@ -125,54 +126,59 @@ async function createCloseAccountBundle(
   
   const closeBundle: VersionedTransaction[] = [];
   const closeInstructions: TransactionInstruction[] = [];
-  const feePaid = new Set<string>();
-  const devWallet = new PublicKey(process.env.NEXT_PUBLIC_DEV_WALLET!);
 
-  // Bundle all close instructions together
-  for (const token of tokens) {
-    try {
-      const ata = await getAssociatedTokenAddress(
-        new PublicKey(token.id),
-        wallet.publicKey
-      );
-
-      closeInstructions.push(
-        createCloseAccountInstruction(
-          ata,
-          wallet.publicKey,
-          wallet.publicKey
-        )
-      );
-
-      // Add fee payment if not paid for this token
-      if (!feePaid.has(token.id)) {
-        closeInstructions.push(
-          SystemProgram.transfer({
-            fromPubkey: wallet.publicKey,
-            toPubkey: devWallet,
-            lamports: 1_000_000 // 0.001 SOL
-          })
+  try {
+    // First, collect all close instructions
+    const closePromises = tokens.map(async (token) => {
+      try {
+        const ata = await getAssociatedTokenAddress(
+          new PublicKey(token.id),
+          wallet.publicKey!
         );
-        feePaid.add(token.id);
+        
+        return createCloseAccountInstruction(
+          ata,
+          wallet.publicKey!,
+          wallet.publicKey!
+        );
+      } catch (error) {
+        console.error(`Failed to prepare close for ${token.id}:`, error);
+        return null;
       }
-    } catch (error) {
-      console.error(`Failed to prepare close for ${token.id}:`, error);
+    });
+
+    // Wait for all close instructions to be prepared
+    const closeResults = await Promise.all(closePromises);
+    
+    // Filter out any null results from failed preparations
+    const validCloseInstructions = closeResults.filter((instr): instr is TransactionInstruction => instr !== null);
+    
+    if (validCloseInstructions.length > 0) {
+      // Add all close instructions first
+      closeInstructions.push(...validCloseInstructions);
+
+      // Add fee instructions once for the entire bundle
+      const instructionsWithFees = await createTransactionWithReferral(
+        closeInstructions,
+        wallet.publicKey,
+        solConnection,
+        validCloseInstructions.length // Pass total number of tokens being closed
+      );
+
+      // Create single transaction with all instructions
+      const recentBlockhash = blockhash || 
+        await solConnection.getLatestBlockhash().then(res => res.blockhash);
+        
+      const messageV0 = new TransactionMessage({
+        payerKey: wallet.publicKey,
+        recentBlockhash: recentBlockhash as string,
+        instructions: instructionsWithFees
+      }).compileToV0Message();
+
+      closeBundle.push(new VersionedTransaction(messageV0));
     }
-  }
-
-  // Create single transaction with all instructions
-  if (closeInstructions.length > 0) {
-    // Use provided blockhash or get a new one
-    const recentBlockhash = blockhash || 
-      await solConnection.getLatestBlockhash().then(res => res.blockhash);
-      
-    const messageV0 = new TransactionMessage({
-      payerKey: wallet.publicKey,
-      recentBlockhash: recentBlockhash as string,
-      instructions: closeInstructions
-    }).compileToV0Message();
-
-    closeBundle.push(new VersionedTransaction(messageV0));
+  } catch (error) {
+    console.error("Error creating close account bundle:", error);
   }
 
   return closeBundle;
@@ -1966,7 +1972,17 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             </div>
             <div className="w-full h-[400px] px-4 relative object-cover overflow-hidden overflow-y-scroll">
               <div className="relative overflow-x-auto shadow-md sm:rounded-lg">
-                {textLoadingState ? (
+                {!publicKey ? (
+                  // New section for when wallet is not connected
+                  <div className="h-[360px] flex flex-col justify-center items-center text-white gap-4">
+                    <div className="text-xl font-bold">
+                      Connect wallet to reload your SOL
+                    </div>
+                    <div className="text-sm text-gray-400">
+                      Select tokens to swap or remove and get SOL back instantly
+                    </div>
+                  </div>
+                ) : textLoadingState ? (
                   <table className="w-full text-sm text-left rtl:text-right text-white dark:text-white">
                     <thead>
                       <tr>

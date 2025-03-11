@@ -16,7 +16,7 @@ const ChangeLog: FC<ChangeLogProps> = ({ isOpen, onClose }) => {
       <div className="shadow-lg p-4">
         <div className="flex justify-evenly items-center mb-2">
           <h5 className="text-white/80 font-light text-sm sm:text-base text-center sm:text-left">
-            What&apos;s new: <br className="block sm:hidden" /><span className="font-semibold">All tx are now 4x faster </span>
+            What&apos;s new: <br className="block sm:hidden" /><span className="font-semibold">All transactions are now 4x faster </span>
           </h5>
           <button 
             onClick={onClose}

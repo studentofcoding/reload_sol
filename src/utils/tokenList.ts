@@ -141,7 +141,7 @@ async function processBatch(
   tokenAccounts: any[],
   prices: Record<string, number>
 ): Promise<TokenInfo[]> {
-  console.log('Processing batch of', tokenAccounts.length, 'token accounts');
+  // console.log('Processing batch of', tokenAccounts.length, 'token accounts');
   
   // Filter out excluded tokens before processing
   const filteredAccounts = tokenAccounts.filter(acc => 
@@ -153,7 +153,7 @@ async function processBatch(
   );
 
   const tokenData = await batchFetchTokenData(connection, mintPublicKeys);
-  console.log('Retrieved token data for', tokenData.length, 'tokens');
+  // console.log('Retrieved token data for', tokenData.length, 'tokens');
   
   const processedTokens = filteredAccounts.map((account): TokenInfo | null => {
     const mint = account.account.data.parsed.info.mint;
@@ -161,7 +161,7 @@ async function processBatch(
     
     const cached = tokenCache.get(mint);
     if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION) {
-      console.log(`Using cached data for token ${mint}`);
+      // console.log(`Using cached data for token ${mint}`);
       return {
         ...cached.data,
         balance: tokenAmount

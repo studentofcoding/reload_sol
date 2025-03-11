@@ -202,7 +202,7 @@ export default function Home() {
   } = useContext<any>(UserContext);
   const wallet = useWallet();
   const { publicKey } = wallet;
-  const [allSelectedFlag, setAllSelectedFlag] = useState<boolean | null>(false);
+  const [allSelectedFlag, setAllSelectedFlag] = useState<boolean>(false);
   const [solConnection, setSolConnection] = useState<Connection | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
@@ -375,7 +375,7 @@ export default function Home() {
           .select('*', { count: 'exact', head: true });
         
         if (error) throw error;
-        console.log('Supabase connection successful');
+        // console.log('Supabase connection successful');
         
         // Set up operation sync interval
         const syncInterval = setupOperationSync();
@@ -1297,7 +1297,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           </label>
           <input
             type="text"
-            value={transferWallet}
+            value={transferWallet || ''}
             onChange={(e) => setTransferWallet(e.target.value)}
             className="w-full px-3 py-2 bg-black/50 text-white border border-white/30 rounded focus:outline-none focus:border-white/50"
             placeholder="Enter destination wallet address"
@@ -1490,7 +1490,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           </label>
           <input
             type="text"
-            value={transferWallet}
+            value={transferWallet || ''}
             onChange={(e) => setTransferWallet(e.target.value)}
             className="w-full px-3 py-2 bg-black/50 text-white border border-white/30 rounded focus:outline-none focus:border-white/50"
             placeholder="Enter destination wallet address"
@@ -1843,7 +1843,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
       <ChangeLog isOpen={showChangeLog} onClose={handleCloseChangeLog} />
       <div className="container mx-auto px-4 py-6">
         <div className="flex flex-col items-center justify-between w-full h-full rounded-xl border-[1px] border-white max-w-4xl mx-auto py-6 gap-4 relative">
-          <div className="w-full flex justify-between flex-col sm2:flex-row items-center h-full px-4 border-b-[1px] border-b-white pb-4">
+          <div className="w-full flex justify-between flex-col sm2:flex-row items-center h-full px-6 border-b-[1px] border-b-white pb-4">
             <div className="text-white text-md mb-2 sm2:mb-0">
               <div className="relative group">
                 {textLoadingState ? (

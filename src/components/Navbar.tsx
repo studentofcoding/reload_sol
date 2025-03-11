@@ -810,109 +810,92 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
 
     setLoadingText("Preparing transactions...");
     setTextLoadingState(true);
-    
-    // Start overall timer
     startTimer("Total Swap Process");
 
     try {
-      // Step 1: Prepare all swap transactions with parallel processing
+      // Get blockhash once at the start to avoid multiple RPC calls
+      const { blockhash, lastValidBlockHeight } = await measureAsync("Get Blockhash", () => 
+        solConnection.getLatestBlockhash('confirmed')
+      );
+
+      // Step 1: Prepare all swap transactions with optimized parallel processing
       startTimer("Swap Preparation");
       const swapBundle: VersionedTransaction[] = [];
       const failedTokens: string[] = [];
-      const tokenMap = new Map<string, SelectedTokens>(); // Map token IDs to their data
       
-      // Create a more efficient rate limiter - 10 requests per second
-      const rateLimiter = new RateLimiter(10);
-      
-      // Map tokens for easier lookup
-      selectedTokens.forEach(token => tokenMap.set(token.id, token));
-      
-      // Create batches of tokens for processing
-      const BATCH_SIZE = 5; // Process 5 tokens at a time
+      // Increased batch size to match rate limit
+      const BATCH_SIZE = 10;
       const batches: SelectedTokens[][] = [];
       
+      // Create batches
       for (let i = 0; i < selectedTokens.length; i += BATCH_SIZE) {
         batches.push(selectedTokens.slice(i, i + BATCH_SIZE));
       }
       
-      // Process each batch
-      let processedCount = 0;
-      for (const batch of batches) {
-        startTimer(`Batch ${processedCount}-${processedCount + batch.length}`);
-        setLoadingText(`Preparing swaps for ${selectedTokens.length} tokens...`);
-        
-        // Process this batch in parallel
-        const batchResults = await Promise.all(batch.map(async (token) => {
-          try {
-            console.log(`Preparing swap for ${token.id}`);
-            
-            // First get the quote
-            // const quoteResponse = await measureAsync(`Quote for ${token.symbol}`, () => 
-            //   rateLimiter.schedule(async () => {
-            //     const response = await fetch(
-            //       `https://swap-v2.solanatracker.io/rate?` + new URLSearchParams({
-            //         from: token.id,
-            //         to: NATIVE_MINT.toBase58(),
-            //         amount: token.amount.toString(),
-            //         slippage: SLIPPAGE.toString()
-            //       })
-            //     );
-                
-            //     if (!response.ok) throw new Error(`Quote failed: ${response.statusText}`);
-            //     return response.json();
-            //   })
-            // );
+      // Process all batches in parallel with connection pooling
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+      try {
+        // Process all batches concurrently
+        await Promise.all(batches.map(async (batch, batchIndex) => {
+          const batchStart = batchIndex * BATCH_SIZE;
+          startTimer(`Batch ${batchStart}-${batchStart + batch.length}`);
+          
+          // Process all tokens in the batch concurrently
+          const batchPromises = batch.map(async (token) => {
+            try {
+              const response = await fetch("https://swap-v2.solanatracker.io/swap", {
+                method: "POST",
+                headers: { 
+                  "Content-Type": "application/json",
+                  "Connection": "keep-alive"
+                },
+                body: JSON.stringify({
+                  from: token.id,
+                  to: NATIVE_MINT.toBase58(),
+                  amount: token.amount,
+                  slippage: SLIPPAGE,
+                  payer: wallet.publicKey?.toBase58(),
+                  priorityFee: 0.0001,
+                  feeType: "add",
+                  fee: "3V3N5xh6vUUVU3CnbjMAXoyXendfXzXYKzTVEsFrLkgX:0.3"
+                }),
+                signal: controller.signal,
+                keepalive: true
+              });
               
-            // Then get the swap transaction
-            const swapResponse = await measureAsync(`Swap TX for ${token.symbol}`, () => 
-              rateLimiter.schedule(async () => {
-                const response = await fetch("https://swap-v2.solanatracker.io/swap", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    from: token.id,
-                    to: NATIVE_MINT.toBase58(),
-                    amount: token.amount,
-                    slippage: SLIPPAGE,
-                    payer: wallet.publicKey?.toBase58(),
-                    priorityFee: 0.0005,
-                    feeType: "add",
-                    fee: "3V3N5xh6vUUVU3CnbjMAXoyXendfXzXYKzTVEsFrLkgX:0.1"
-                  })
-                });
-                
-                if (!response.ok) throw new Error(`Swap request failed: ${response.statusText}`);
-                return response.json();
-              })
-            );
-            
-            // Process the swap transaction
-            if (swapResponse.txn) {
+              if (!response.ok) throw new Error(`Swap request failed: ${response.statusText}`);
+              
+              const swapResponse = await response.json();
+              if (!swapResponse.txn) throw new Error("No transaction returned from swap API");
+              
               const tx = VersionedTransaction.deserialize(Buffer.from(swapResponse.txn, 'base64'));
+              // Set blockhash immediately to avoid another RPC call later  
+              tx.message.recentBlockhash = blockhash;
               return { success: true, tokenId: token.id, tx };
-            } else {
-              throw new Error("No transaction returned from swap API");
+            } catch (error) {
+              console.error(`Failed to prepare swap for ${token.id}:`, error);
+              return { success: false, tokenId: token.id, error };
             }
-          } catch (error) {
-            console.error(`Failed to prepare swap for ${token.id}:`, error);
-            return { success: false, tokenId: token.id, error };
-          }
+          });
+
+          const results = await Promise.all(batchPromises);
+          results.forEach(result => {
+            if (result.success && result.tx) {
+              swapBundle.push(result.tx);
+            } else {
+              failedTokens.push(result.tokenId);
+            }
+          });
+
+          stopTimer(`Batch ${batchStart}-${batchStart + batch.length}`);
+          setLoadingText(`Processed ${swapBundle.length}/${selectedTokens.length} swaps...`);
         }));
-        
-        // Process batch results
-        for (const result of batchResults) {
-          if (result.success && result.tx) {
-            swapBundle.push(result.tx);
-          } else {
-            failedTokens.push(result.tokenId);
-          }
-        }
-        
-        processedCount += batch.length;
-        stopTimer(`Batch ${processedCount - batch.length}-${processedCount}`);
+      } finally {
+        clearTimeout(timeoutId);
       }
-      
-      // Log any failed tokens
+
       if (failedTokens.length > 0) {
         console.warn(`Failed to prepare swaps for ${failedTokens.length} tokens:`, failedTokens);
       }
@@ -922,31 +905,21 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
 
       // Step 2: Execute swap bundle
       if (swapBundle.length > 0) {
-        setLoadingText(`Prepared ${swapBundle.length} swap transactions. Getting blockhash...`);
-        
-        const { blockhash, lastValidBlockHeight } = await measureAsync("Get Blockhash", () => 
-          solConnection.getLatestBlockhash('confirmed')
-        );
-        
-        startTimer("Update Blockhash");
-        const updatedSwapBundle = swapBundle.map(tx => {
-          const newTx = new VersionedTransaction(tx.message);
-          newTx.message.recentBlockhash = blockhash;
-          return newTx;
-        });
-        stopTimer("Update Blockhash");
-        
+        setLoadingText(`Signing ${swapBundle.length} swap transactions...`);
+        startTimer("Transaction Signing");
+        // No need to update blockhash since we already set it during transaction creation
         setLoadingText("Signing swap transactions...");
         const signedSwapBundle = await measureAsync("Sign Transactions", () => {
           if (!wallet.signAllTransactions) {
             throw new Error("Wallet does not support signing transactions");
           }
-          return wallet.signAllTransactions(updatedSwapBundle);
+          return wallet.signAllTransactions(swapBundle);
         });
         
         // Filter selectedTokens to only include those that were successfully prepared
         const tokensToProcess = selectedTokens.filter(token => !failedTokens.includes(token.id));
         
+        // Process swaps in optimized batches
         setLoadingText("Processing swaps...");
         const swapResults = await measureAsync("Process Swaps", () => 
           sendTransactions(
@@ -959,32 +932,32 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           )
         );
 
-        // Track successful swaps
+        // Track successful swaps and prepare close transactions
         if (swapResults.successfulTokens.length > 0) {
+          // Cache operation stats
           cacheOperation(
             wallet.publicKey.toString(),
             'close',
             swapResults.successfulTokens.length
           );
 
-          // Create close bundle for successful swaps
+          // Prepare close transactions for successful swaps
           const tokensToClose = selectedTokens.filter(
             token => swapResults.successfulTokens.includes(token.id)
           );
           
+          // Create and sign close bundle in one batch
           const closeBundle = await measureAsync("Create Close Bundle", () => 
             createCloseAccountBundle(
               tokensToClose, 
               wallet, 
               solConnection,
-              blockhash
+              blockhash // Reuse the same blockhash
             )
           );
           
           if (closeBundle.length > 0) {
             setLoadingText("Signing Reload transactions...");
-
-            
             const signedCloseBundle = await measureAsync("Sign Reload Transactions", () => {
               if (!wallet.signAllTransactions) {
                 throw new Error("Wallet does not support signing transactions");
@@ -992,13 +965,14 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               return wallet.signAllTransactions(closeBundle);
             });
             
+            // Process close transactions
             setLoadingText("Processing Reload...");
             const closeResults = await measureAsync("Process Reloads", () => 
               sendTransactions(
                 signedCloseBundle, 
                 tokensToClose,
                 solConnection,
-                blockhash,
+                blockhash, // Reuse the same blockhash
                 lastValidBlockHeight,
                 'close'
               )

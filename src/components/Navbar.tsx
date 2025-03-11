@@ -261,9 +261,15 @@ export default function Home() {
   // Add a currency formatter function
   const formatCurrency = (value: number) => {
     if (userCurrency === 'USD') {
-      return `$${value.toFixed(2)}`;
+      if (value < 7) {
+        return '';
+      }
+      return `$ ${value.toFixed(2)}`;
     } else {
-      return `Rp${value.toLocaleString('id-ID')}`;
+      if (value < 100000) {
+        return '';
+      }
+      return `Rp ${value.toLocaleString('id-ID')}`;
     }
   };
 
@@ -1851,7 +1857,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                       {swapState ? (
                         <>
                           ~{((tokenList?.length || 0) * 0.001) + (calculateTotalValue(tokenList))} SOL
-                          {solPrice > 0 && (
+                          {solPrice > 0 && formatCurrency(((tokenList?.length || 0) * 0.001 + calculateTotalValue(tokenList)) * solPrice) && (
                             <span className="text-sm ml-1">
                               ({formatCurrency(((tokenList?.length || 0) * 0.001 + calculateTotalValue(tokenList)) * solPrice)})
                             </span>
@@ -1860,7 +1866,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                       ) : (
                         <>
                           {(tokenList?.length || 0) * 0.001} SOL
-                          {solPrice > 0 && (
+                          {solPrice > 0 && formatCurrency(((tokenList?.length || 0) * 0.001) * solPrice) && (
                             <span className="text-sm ml-1">
                               ({formatCurrency(((tokenList?.length || 0) * 0.001) * solPrice)})
                             </span>

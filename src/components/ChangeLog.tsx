@@ -14,7 +14,7 @@ const ChangeLog: FC<ChangeLogProps> = ({ isOpen, onClose }) => {
   return (
     <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 w-[95%] max-w-[600px] mx-auto">
       <div className="shadow-lg p-4">
-        <div className="flex justify-between items-center mb-2">
+        <div className="flex justify-evenly items-center mb-2">
           <h5 className="text-white/80 font-light text-sm sm:text-base text-center sm:text-left">
             What&apos;s new: <br className="block sm:hidden" /><span className="font-semibold">All tx are now 4x faster (from 15 to 4 seconds) </span>
           </h5>

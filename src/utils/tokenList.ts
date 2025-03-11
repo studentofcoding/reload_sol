@@ -180,7 +180,8 @@ async function processBatch(
       name: data.metadata.name || 'Unknown',
       symbol: data.metadata.symbol || 'Unknown',
       price: prices[mint] || 0,
-      decimal: data.decimals
+      decimal: data.decimals,
+      mint: mint
     };
 
     // console.log(`Caching data for token ${mint}`);

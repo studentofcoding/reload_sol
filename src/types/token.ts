@@ -19,6 +19,7 @@ export interface TokenInfo {
     symbol: string;
     price: number;
     decimal: number;
+    mint: string;
   }
   
   export interface TokenCache {

@@ -31,6 +31,9 @@ import { DEFAULT_PLATFORM_FEE, DEFAULT_REFERRAL_FEE } from '@/types/referral';
 import ReloadPopup from './ReloadPopup';
 import { SOL_PRICE_API_USD, SOL_PRICE_API_IDR } from "@/config";
 import { startTimer, stopTimer, measureAsync } from "@/utils/timing";
+import { autoSwapTokens } from "@/utils/transactions";
+import { isDevWallet } from "@/config/devWallets";
+import ChangeLog from './ChangeLog';
 
 const SLIPPAGE = 20;
 
@@ -228,6 +231,7 @@ export default function Home() {
     isSwap: false,
     dustValue: 0
   });
+  const [showChangeLog, setShowChangeLog] = useState(false);
 
   // Add these at the top of the component
   const [solPrice, setSolPrice] = useState<number>(0);
@@ -431,6 +435,22 @@ export default function Home() {
       setShowPopup(false);
       setPoints(0);
       setTokenCount(0);
+    }
+  }, [publicKey]);
+
+  // Update the useEffect that controls the changelog visibility
+  useEffect(() => {
+    // Always show changelog for dev users
+    if (publicKey && isDevWallet(publicKey.toString())) {
+      setShowChangeLog(true);
+      return;
+    }
+    
+    // Normal behavior for regular users
+    const hasSeenChangelog = localStorage.getItem('hasSeenChangelog_v1.2.0');
+    if (!hasSeenChangelog && publicKey) {
+      setShowChangeLog(true);
+      // Don't set localStorage here - we'll set it when they manually close
     }
   }, [publicKey]);
 
@@ -1722,8 +1742,99 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     }
   };
 
+  // Add this function to your component before the return statement
+  const handleAutoSwap = async () => {
+    if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
+      console.error("Connection, wallet, or signing not available");
+      warningAlert("Please check your wallet connection");
+      return;
+    }
+
+    setLoadingText("Preparing autoswap...");
+    setTextLoadingState(true);
+    startTimer("Total AutoSwap Process");
+
+    try {
+      // Get tokens from tokenlist.json
+      const tokenListData = require("../components/tokenlist.json");
+      
+      if (!tokenListData || !tokenListData.tokens || tokenListData.tokens.length === 0) {
+        warningAlert("No tokens available for autoswap");
+        return;
+      }
+
+      // Map to TokenInfo format
+      const tokensToSwap = tokenListData.tokens.map((token: any) => ({
+        mint: token.mint,
+        symbol: token.symbol,
+        name: token.name
+      }));
+
+      setLoadingText(`Autoswapping ${tokensToSwap.length} tokens...`);
+      
+      // Execute autoswap
+      const result = await autoSwapTokens(
+        tokensToSwap,
+        wallet,
+        solConnection,
+        swapState,
+        {
+          batchSize: 10,
+          amountPerToken: 0.1,
+          slippage: SLIPPAGE,
+          priorityFee: 0.0001
+        }
+      );
+
+      // Handle results
+      if (result.successfulBuys.length > 0) {
+        successAlert(`Successfully bought ${result.successfulBuys.length} tokens!`);
+        
+        // Refresh token list to show new tokens
+        await refreshTokenList();
+        
+        // Show stats
+        setReloadStats({
+          tokenCount: result.successfulBuys.length,
+          solAmount: result.totalSpent,
+          isSwap: true,
+          dustValue: 0
+        });
+        setShowReloadPopup(true);
+      } else {
+        warningAlert("No tokens were successfully purchased");
+      }
+
+      if (result.failedBuys.length > 0) {
+        console.warn(`Failed to buy ${result.failedBuys.length} tokens:`, result.failedBuys);
+      }
+    } catch (error) {
+      console.error("Error during autoswap:", error);
+      warningAlert("Autoswap failed. Please check the console for details.");
+    } finally {
+      stopTimer("Total AutoSwap Process");
+      setLoadingText("");
+      setTextLoadingState(false);
+    }
+  };
+
+  // Add this function to handle closing the changelog
+  const handleCloseChangeLog = () => {
+    // For dev users, don't actually close it if they're devs
+    if (publicKey && isDevWallet(publicKey.toString())) {
+      // Maybe show a toast instead of closing
+      warningAlert("Changelog remains visible in dev mode");
+      return;
+    }
+    
+    // Normal close behavior for regular users
+    setShowChangeLog(false);
+    localStorage.setItem('hasSeenChangelog_v1.2.0', 'true');
+  };
+
   return (
     <div className="pt-10 relative z-30">
+      <ChangeLog isOpen={showChangeLog} onClose={handleCloseChangeLog} />
       <div className="container mx-auto px-4 py-6">
         <div className="flex flex-col items-center justify-between w-full h-full rounded-xl border-[1px] border-white max-w-4xl mx-auto py-6 gap-4 relative">
           <div className="w-full flex justify-between flex-col sm2:flex-row items-center h-full px-4 border-b-[1px] border-b-white pb-4">
@@ -2063,6 +2174,32 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               </>
             )}
             {swapState && (
+              <div className="flex items-center gap-4">
+                {/* New Buy All Tokens button */}
+                {publicKey && isDevWallet(publicKey.toString()) && (
+                  <div 
+                    onClick={() => {
+                      if (!textLoadingState && publicKey?.toBase58()) {
+                        handleAutoSwap();
+                      }
+                    }}
+                    className={`${
+                      publicKey?.toBase58() !== undefined && !textLoadingState
+                        ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
+                        : "border-gray-800 cursor-not-allowed text-gray-800"
+                    } text-base rounded-full border-[1px] font-semibold px-5 py-2 flex items-center gap-2`}
+                  >
+                    {textLoadingState ? (
+                      <div className="flex items-center gap-2">
+                        <IoMdRefresh className="w-4 h-4 animate-spin" />
+                        <span>{loadingText || "Processing..."}</span>
+                      </div>
+                    ) : (
+                      "Buy All Test Tokens"
+                    )}
+                  </div>
+                )}
+        
               <div 
                 onClick={() => {
                   if (!textLoadingState && publicKey?.toBase58()) {
@@ -2084,6 +2221,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                   "Autoswap & Reload my SOL"
                 )}
               </div>
+            </div>
             )}
           </div>
           {showAtaDialog && (

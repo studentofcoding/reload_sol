@@ -1,3 +1,5 @@
+'use client';
+
 import { createContext, useContext, useState, useEffect } from 'react';
 import { isValidReferrer, updateReferrerEarnings, getWalletByAlias } from '@/utils/referral';
 import type { ReferralInfo } from '@/types/referral';

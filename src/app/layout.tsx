@@ -6,19 +6,20 @@ import Navbar from '@/components/Navbar'
 import Header from '@/components/Header'
 import { Toaster } from 'react-hot-toast'
 import Script from 'next/script'
-import { headers } from 'next/headers'
+import { ReferralProvider } from '@/contexts/referralContext'
 
 const inter = Inter({ subsets: ["latin"] })
 
-export const metadata = {
-  title: "ReloadSOL",
-  description: "Swap all your useless tokens and Reload your SOL",
+// Create a client component wrapper for the providers
+const ClientProviders = ({ children }: { children: React.ReactNode }) => {
+  return (
+    <ReferralProvider>
+      <Providers>
+        {children}
+      </Providers>
+    </ReferralProvider>
+  );
 };
-
-function getReferralFromPath(path: string): string | null {
-  const match = path.match(/@([^/]+)/);
-  return match ? match[1] : null;
-}
 
 export default function RootLayout({
   children,
@@ -28,15 +29,15 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
-        <Providers>
+        <ClientProviders>
           <div className="min-h-screen bg-black">
             <Header />
             <Navbar />
             {children}
-            <Script src="https://scripts.simpleanalyticscdn.com/latest.js"  />
+            <Script src="https://scripts.simpleanalyticscdn.com/latest.js" />
           </div>
-        </Providers>
-        <Toaster position="top-right" />
+        </ClientProviders>
+        <Toaster position="top-center" />
       </body>
     </html>
   );

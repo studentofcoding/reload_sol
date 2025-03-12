@@ -322,7 +322,7 @@ async function getReferralInfo(): Promise<ReferralInfo | null> {
     // Get referral code from URL
     const urlParams = new URLSearchParams(window.location.search);
     const pathParts = window.location.pathname.split('@');
-    const referralCode = pathParts[1] || urlParams.get('ref');
+    const referralCode = pathParts[1] || urlParams.get('with');
 
     if (!referralCode) return null;
 

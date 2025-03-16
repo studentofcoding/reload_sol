@@ -35,6 +35,8 @@ import { autoSwapTokens } from "@/utils/transactions";
 import { isDevWallet } from "@/config/devWallets";
 import ChangeLog from './ChangeLog';
 import { createTransactionWithReferral } from '@/utils/transactions';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 
 const SLIPPAGE = 20;
 
@@ -244,6 +246,8 @@ export default function Home() {
   const [userCurrency, setUserCurrency] = useState<'USD' | 'IDR'>('USD');
   const [solPriceUSD, setSolPriceUSD] = useState<number>(0);
   const [solPriceIDR, setSolPriceIDR] = useState<number>(0);
+
+  const pathname = usePathname();
 
   // Add this function to detect user location
   const detectUserLocation = async () => {
@@ -1757,7 +1761,6 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
   // Add this function to your component before the return statement
   const handleAutoSwap = async () => {
     if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
-      console.error("Connection, wallet, or signing not available");
       warningAlert("Please check your wallet connection");
       return;
     }
@@ -1767,50 +1770,75 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     startTimer("Total AutoSwap Process");
 
     try {
-      // Get tokens from tokenlist.json
       const tokenListData = require("../components/tokenlist.json");
       
-      if (!tokenListData || !tokenListData.tokens || tokenListData.tokens.length === 0) {
+      if (!tokenListData?.tokens?.length) {
         warningAlert("No tokens available for autoswap");
         return;
       }
 
-      // Map to TokenInfo format
-      const tokensToSwap = tokenListData.tokens.map((token: any) => ({
-        mint: token.mint,
-        symbol: token.symbol,
-        name: token.name
-      }));
+      const numTokens = 3; // Number of tokens to swap
+      const amountPerToken = 0.001; // SOL per token
+      const txFee = 0.000005; // Standard transaction fee
+      const priorityFee = 0.000001; // Priority fee per tx
+      
+      // Calculate total required balance
+      const requiredBalance = (
+        (amountPerToken * numTokens) + // Amount for tokens
+        (txFee * numTokens) + // Transaction fees
+        (priorityFee * numTokens) + // Priority fees
+        0.001 // Safety buffer
+      );
+
+      // Check wallet balance
+      const balance = await solConnection.getBalance(wallet.publicKey);
+      const balanceInSol = balance / LAMPORTS_PER_SOL; // Convert lamports to SOL
+
+      if (balanceInSol < requiredBalance) {
+        warningAlert(`Insufficient SOL balance. Need at least ${requiredBalance.toFixed(4)} SOL, you have ${balanceInSol.toFixed(4)} SOL`);
+        return;
+      }
+
+      const tokensToSwap = tokenListData.tokens
+        .slice(0, numTokens)
+        .map((token: any) => ({
+          mint: token.mint,
+          symbol: token.symbol,
+          name: token.name,
+          id: token.mint,
+          balance: amountPerToken * LAMPORTS_PER_SOL // Convert SOL to lamports
+        }));
 
       setLoadingText(`Autoswapping ${tokensToSwap.length} tokens...`);
       
-      // Execute autoswap
       const result = await autoSwapTokens(
         tokensToSwap,
         wallet,
         solConnection,
-        swapState,
+        false,
         {
-          batchSize: 10,
-          amountPerToken: 0.1,
-          slippage: SLIPPAGE,
-          priorityFee: 0.0001
+          batchSize: 1, // Process one at a time
+          amountPerToken: amountPerToken,
+          slippage: 25, // 25% slippage for meme tokens
+          priorityFee: priorityFee,
+          abortTimeoutMs: 60000,
+          delayBetweenBatches: 2000
         }
       );
 
       // Handle results
       if (result.successfulBuys.length > 0) {
         successAlert(`Successfully bought ${result.successfulBuys.length} tokens!`);
-        
-        // Refresh token list to show new tokens
+        await sleep(3000);
+        forceRefreshTokens();
         await refreshTokenList();
         
-        // Show stats
         setReloadStats({
           tokenCount: result.successfulBuys.length,
           solAmount: result.totalSpent,
           isSwap: true,
-          dustValue: 0
+          dustValue: 0,
+          successfulTokenIds: result.successfulBuys
         });
         setShowReloadPopup(true);
       } else {
@@ -1819,10 +1847,11 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
 
       if (result.failedBuys.length > 0) {
         console.warn(`Failed to buy ${result.failedBuys.length} tokens:`, result.failedBuys);
+        warningAlert(`Failed to buy ${result.failedBuys.length} tokens. Check console for details.`);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error during autoswap:", error);
-      warningAlert("Autoswap failed. Please check the console for details.");
+      warningAlert(`Autoswap failed: ${error.message || "Unknown error"}`);
     } finally {
       stopTimer("Total AutoSwap Process");
       setLoadingText("");
@@ -2306,6 +2335,22 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
         dustValue={reloadStats.dustValue}
         successfulTokenIds={reloadStats.successfulTokenIds}
       />
+      <div className="container max-w-4xl mx-auto">
+        <div className="flex justify-center mb-6">
+          <div className="flex space-x-2 bg-black/80 rounded-lg p-1 border border-white/20">
+            <Link href="/" className={`px-4 py-2 rounded-md ${
+              pathname === '/' ? 'bg-white/10 text-white' : 'text-white/60 hover:text-white/80'
+            }`}>
+              Reload
+            </Link>
+            <Link href="/copy-traders" className={`px-4 py-2 rounded-md ${
+              pathname === '/copy-traders' ? 'bg-white/10 text-white' : 'text-white/60 hover:text-white/80'
+            }`}>
+              Copy Traders
+            </Link>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

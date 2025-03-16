@@ -11,7 +11,7 @@ const rateLimiter = new RateLimiter(10, 1000, 'SwapRateLimiter');
 
 interface AutoSwapResult {
   successfulBuys: string[];
-  failedBuys: string[];
+  failedBuys: { mint: string; symbol: string; error: string }[];
   totalSpent: number;
   successfulSignatures: string[];
 }
@@ -29,6 +29,13 @@ interface ReferralInfo {
   walletAddress: string;
   alias: string;
   isActive: boolean;
+}
+
+interface CopyTradingOptions {
+  maxAmountPerTrade?: number;
+  slippage?: number;
+  priorityFee?: number;
+  mode?: 'sequential' | 'bundle';
 }
 
 export function calculateAutoBuyCost(numTokens: number, amountPerToken: number = 0.1): number {
@@ -86,56 +93,6 @@ export async function autoSwapTokens(
   const referralInfo = await getReferralInfo();
   
   try {
-    // First check if ATAs exist for each token and create them if needed
-    const ataChecks = await Promise.all(tokenList.map(async (token) => {
-      try {
-        const ata = await getAssociatedTokenAddress(
-          new PublicKey(token.mint),
-          wallet.publicKey!
-        );
-        
-        // Check if ATA exists
-        const account = await solConnection.getAccountInfo(ata);
-        return {
-          token,
-          ataExists: !!account,
-          ata
-        };
-      } catch (error) {
-        console.error(`Error checking ATA for ${token.symbol}:`, error);
-        failedTokens.push(token.mint);
-        return { token, ataExists: false, ata: null };
-      }
-    }));
-    
-    // Create ATAs for tokens that need them
-    const tokensNeedingAta = ataChecks.filter(check => !check.ataExists && check.ata);
-    
-    if (tokensNeedingAta.length > 0) {
-      // Create ATAs in batches
-      const ataBatchSize = 5;
-      for (let i = 0; i < tokensNeedingAta.length; i += ataBatchSize) {
-        const batch = tokensNeedingAta.slice(i, i + ataBatchSize);
-        const instructions = batch.map(({ token, ata }) => 
-          createAssociatedTokenAccountInstruction(
-            wallet.publicKey!,
-            ata!,
-            wallet.publicKey!,
-            new PublicKey(token.mint)
-          )
-        );
-        
-        // Create and send ATA creation transaction
-        // (Implementation depends on your transaction structure)
-        // This is a simplified example
-        console.log(`Creating ${batch.length} ATAs for tokens`);
-        
-        // Process ATA creation here...
-        // You would need to create a transaction, sign it, and send it
-      }
-    }
-    
-    // Continue with the existing swap logic...
     // Process all batches concurrently
     await Promise.all(batches.map(async (batch, batchIndex) => {
       // Process all tokens in the batch concurrently
@@ -196,8 +153,6 @@ export async function autoSwapTokens(
       });
 
       await Promise.all(batchPromises);
-      
-      // No delay between batches to make it faster
     }));
   } finally {
     clearTimeout(timeoutId);
@@ -234,15 +189,23 @@ export async function autoSwapTokens(
               blockhash,
               lastValidBlockHeight
             }).then(() => {
-              result.successfulBuys.push(token.symbol);
+              result.successfulBuys.push(token.mint);
               result.totalSpent += amountPerToken;
             }).catch(error => {
               console.error(`Failed to confirm transaction for ${token.symbol}:`, error);
-              result.failedBuys.push(token.symbol);
+              result.failedBuys.push({
+                mint: token.mint,
+                symbol: token.symbol,
+                error: error instanceof Error ? error.message : 'Unknown error'
+              });
             });
           } catch (error) {
             console.error(`Failed to send transaction for ${token.symbol}:`, error);
-            result.failedBuys.push(token.symbol);
+            result.failedBuys.push({
+              mint: token.mint,
+              symbol: token.symbol,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
           }
         }));
       }
@@ -253,8 +216,12 @@ export async function autoSwapTokens(
     } catch (error) {
       console.error("Failed to sign transactions:", error);
       tokensToProcess.forEach(token => {
-        if (!result.failedBuys.includes(token.symbol)) {
-          result.failedBuys.push(token.symbol);
+        if (!result.failedBuys.some(f => f.mint === token.mint)) {
+          result.failedBuys.push({
+            mint: token.mint,
+            symbol: token.symbol,
+            error: 'Failed to sign transaction'
+          });
         }
       });
     }
@@ -445,4 +412,167 @@ export async function createTransactionWithReferral(
       lamports: totalFee
     })
   ];
+}
+
+/**
+ * Start copy trading for specified trader addresses
+ */
+export async function startCopyTrading(
+  traderAddresses: string[],
+  wallet: WalletContextState,
+  connection: Connection,
+  options: CopyTradingOptions = {}
+): Promise<boolean> {
+  if (!wallet.publicKey || !wallet.signTransaction) {
+    throw new Error('Wallet not connected');
+  }
+
+  const {
+    maxAmountPerTrade = 0.01,
+    slippage = 1.0,
+    priorityFee = 0.000005,
+    mode = 'sequential'
+  } = options;
+
+  try {
+    // Store copy trading configuration in localStorage
+    const config = {
+      active: true,
+      traderAddresses,
+      maxAmountPerTrade,
+      slippage,
+      priorityFee,
+      mode,
+      startTime: Date.now()
+    };
+
+    localStorage.setItem(`copy_trading_${wallet.publicKey.toString()}`, JSON.stringify(config));
+    
+    // In a real implementation, this might also set up a WebSocket connection
+    // or register with a backend service to receive trade notifications
+    
+    return true;
+  } catch (error) {
+    console.error('Error starting copy trading:', error);
+    throw error;
+  }
+}
+
+/**
+ * Stop copy trading for the current wallet
+ */
+export async function stopCopyTrading(
+  walletPublicKey: PublicKey
+): Promise<boolean> {
+  try {
+    // Get current config
+    const configStr = localStorage.getItem(`copy_trading_${walletPublicKey.toString()}`);
+    if (!configStr) {
+      return false; // No active copy trading
+    }
+    
+    const config = JSON.parse(configStr);
+    
+    // Update config to inactive
+    config.active = false;
+    config.endTime = Date.now();
+    
+    localStorage.setItem(`copy_trading_${walletPublicKey.toString()}`, JSON.stringify(config));
+    
+    // In a real implementation, this would also close WebSocket connections
+    // or unregister from backend services
+    
+    return true;
+  } catch (error) {
+    console.error('Error stopping copy trading:', error);
+    throw error;
+  }
+}
+
+/**
+ * Check if copy trading is active for the current wallet
+ */
+export function isCopyTradingActive(walletPublicKey: PublicKey | null): boolean {
+  if (!walletPublicKey) return false;
+  
+  try {
+    const configStr = localStorage.getItem(`copy_trading_${walletPublicKey.toString()}`);
+    if (!configStr) return false;
+    
+    const config = JSON.parse(configStr);
+    return config.active === true;
+  } catch (error) {
+    console.error('Error checking copy trading status:', error);
+    return false;
+  }
+}
+
+/**
+ * Execute a copy trade based on a trader's transaction
+ */
+export async function executeCopyTrade(
+  tokenMint: string,
+  isBuy: boolean,
+  amount: number,
+  wallet: WalletContextState,
+  connection: Connection,
+  options: CopyTradingOptions = {}
+): Promise<string | null> {
+  if (!wallet.publicKey || !wallet.signTransaction) {
+    throw new Error('Wallet not connected');
+  }
+
+  const {
+    slippage = 1.0,
+    priorityFee = 0.000005,
+  } = options;
+
+  try {
+    // Create a complete TokenInfo object with required properties
+    const tokenInfo: TokenInfo = {
+      mint: tokenMint,
+      symbol: 'UNKNOWN', // Default symbol
+      name: 'Unknown Token', // Default name
+      id: tokenMint, // Use mint as id
+      balance: 0, // Default balance
+      price: 0, // Default price
+      decimal: 9, // Default decimal (most common for Solana tokens)
+      // Add any other required properties with default values
+    };
+
+    // For buy operations, use the existing autoSwapTokens function
+    if (isBuy) {
+      const result = await autoSwapTokens(
+        [tokenInfo], // Complete TokenInfo object
+        wallet,
+        connection,
+        true, // swapState = true for buying
+        {
+          amountPerToken: amount,
+          slippage: slippage,
+          priorityFee: priorityFee,
+        }
+      );
+      
+      return result.successfulSignatures[0] || null;
+    } else {
+      // For sell operations, use autoSwapTokens with swapState = false
+      const result = await autoSwapTokens(
+        [tokenInfo], // Complete TokenInfo object
+        wallet,
+        connection,
+        false, // swapState = false for selling
+        {
+          amountPerToken: amount,
+          slippage: slippage,
+          priorityFee: priorityFee,
+        }
+      );
+      
+      return result.successfulSignatures[0] || null;
+    }
+  } catch (error) {
+    console.error('Error executing copy trade:', error);
+    throw error;
+  }
 }

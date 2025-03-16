@@ -34,7 +34,7 @@ import { startTimer, stopTimer, measureAsync } from "@/utils/timing";
 import { autoSwapTokens } from "@/utils/transactions";
 import { isDevWallet } from "@/config/devWallets";
 import ChangeLog from './ChangeLog';
-import { createTransactionWithReferral } from '@/utils/transactions';
+import { createTransactionWithReferral, devWalletAutoBuy } from '@/utils/transactions';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
@@ -1777,59 +1777,58 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
         return;
       }
 
-      const numTokens = 3; // Number of tokens to swap
       const amountPerToken = 0.001; // SOL per token
+      const totalTokens = tokenListData.tokens.length; // Get all tokens from list
       const txFee = 0.000005; // Standard transaction fee
-      const priorityFee = 0.000001; // Priority fee per tx
+      const priorityFee = 0.0001; // Increased priority fee for faster execution
       
-      // Calculate total required balance
+      // Calculate total required balance including all fees
       const requiredBalance = (
-        (amountPerToken * numTokens) + // Amount for tokens
-        (txFee * numTokens) + // Transaction fees
-        (priorityFee * numTokens) + // Priority fees
-        0.001 // Safety buffer
+        (amountPerToken * totalTokens) + // Amount for tokens
+        (txFee * totalTokens) + // Transaction fees
+        (priorityFee * totalTokens) + // Priority fees
+        0.01 // Increased safety buffer
       );
 
       // Check wallet balance
       const balance = await solConnection.getBalance(wallet.publicKey);
-      const balanceInSol = balance / LAMPORTS_PER_SOL; // Convert lamports to SOL
+      const balanceInSol = balance / LAMPORTS_PER_SOL;
 
       if (balanceInSol < requiredBalance) {
         warningAlert(`Insufficient SOL balance. Need at least ${requiredBalance.toFixed(4)} SOL, you have ${balanceInSol.toFixed(4)} SOL`);
         return;
       }
 
-      const tokensToSwap = tokenListData.tokens
-        .slice(0, numTokens)
-        .map((token: any) => ({
-          mint: token.mint,
-          symbol: token.symbol,
-          name: token.name,
-          id: token.mint,
-          balance: amountPerToken * LAMPORTS_PER_SOL // Convert SOL to lamports
-        }));
-
-      setLoadingText(`Autoswapping ${tokensToSwap.length} tokens...`);
+      setLoadingText(`Preparing to buy ${totalTokens} tokens in one batch...`);
       
-      const result = await autoSwapTokens(
-        tokensToSwap,
+      // Use the new devWalletAutoBuy function
+      const result = await devWalletAutoBuy(
         wallet,
         solConnection,
-        false,
         {
-          batchSize: 1, // Process one at a time
+          maxTokens: totalTokens, // Buy all tokens in the list
           amountPerToken: amountPerToken,
-          slippage: 25, // 25% slippage for meme tokens
-          priorityFee: priorityFee,
-          abortTimeoutMs: 60000,
-          delayBetweenBatches: 2000
+          slippage: 1.0, // Reduced slippage since we're batch processing
+          priorityFee: priorityFee
         }
       );
 
       // Handle results
       if (result.successfulBuys.length > 0) {
-        successAlert(`Successfully bought ${result.successfulBuys.length} tokens!`);
-        await sleep(3000);
+        successAlert(`Successfully bought ${result.successfulBuys.length} tokens in one batch!`);
+        
+        // Map successful buys to symbols for better user feedback
+        const successfulSymbols = result.successfulBuys
+          .map((mint: string) => {
+            const token = tokenListData.tokens.find((t: any) => t.mint === mint);
+            return token ? token.symbol : mint.slice(0, 4) + '...';
+          })
+          .join(', ');
+        
+        console.log('Successfully bought:', successfulSymbols);
+        
+        // Refresh token list and update UI
+        await sleep(2000); // Short delay to allow transactions to settle
         forceRefreshTokens();
         await refreshTokenList();
         
@@ -1846,9 +1845,24 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
       }
 
       if (result.failedBuys.length > 0) {
-        console.warn(`Failed to buy ${result.failedBuys.length} tokens:`, result.failedBuys);
+        // Create a more detailed error message
+        const failedSymbols = result.failedBuys
+          .map((fail: any) => `${fail.symbol} (${fail.error})`)
+          .join('\n');
+        
+        console.warn('Failed to buy tokens:', failedSymbols);
         warningAlert(`Failed to buy ${result.failedBuys.length} tokens. Check console for details.`);
       }
+
+      // Log performance metrics
+      console.log('Auto-buy Performance:', {
+        totalTokens,
+        successful: result.successfulBuys.length,
+        failed: result.failedBuys.length,
+        totalSpent: result.totalSpent,
+        averageCostPerToken: result.totalSpent / result.successfulBuys.length
+      });
+
     } catch (error: any) {
       console.error("Error during autoswap:", error);
       warningAlert(`Autoswap failed: ${error.message || "Unknown error"}`);

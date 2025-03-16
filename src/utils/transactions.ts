@@ -6,6 +6,8 @@ import { sleep } from "./sleep";
 import { NATIVE_MINT } from "@solana/spl-token";
 import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } from "@solana/spl-token";
 import { adminSupabase } from '@/utils/supabase';
+import tokenList from '@/components/tokenlist.json';
+import { isDevWallet } from '@/config/devWallets';
 
 const rateLimiter = new RateLimiter(10, 1000, 'SwapRateLimiter');
 
@@ -56,7 +58,7 @@ export async function autoSwapTokens(
     delayBetweenBatches = 1500,
     amountPerToken = 0.001,
     slippage = 10,
-    priorityFee = 0.0001,
+    priorityFee = 0.00002,
     abortTimeoutMs = 30000
   } = options;
 
@@ -573,6 +575,258 @@ export async function executeCopyTrade(
     }
   } catch (error) {
     console.error('Error executing copy trade:', error);
+    throw error;
+  }
+}
+
+/**
+ * Auto buy multiple tokens in a single batch for dev wallet
+ */
+export async function devWalletAutoBuy(
+  wallet: WalletContextState,
+  connection: Connection,
+  options: {
+    maxTokens?: number;
+    amountPerToken?: number;
+    slippage?: number;
+    priorityFee?: number;
+  } = {}
+): Promise<AutoSwapResult> {
+  const {
+    maxTokens = 15,
+    amountPerToken = 0.001,
+    slippage = 5.0,
+    priorityFee = 0.0001
+  } = options;
+
+  // Verify this is the dev wallet using isDevWallet check
+  if (!wallet.publicKey || !wallet.signAllTransactions) {
+    throw new Error("Wallet not connected");
+  }
+
+  if (!isDevWallet(wallet.publicKey.toString())) {
+    throw new Error("Unauthorized: Only dev wallet can use this function");
+  }
+
+  const result: AutoSwapResult = {
+    successfulBuys: [],
+    failedBuys: [],
+    totalSpent: 0,
+    successfulSignatures: []
+  };
+
+  try {
+    // Get blockhash once at the start
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+
+    // Prepare token info objects from tokenlist.json
+    const tokensToProcess = tokenList.tokens
+      .slice(0, maxTokens)
+      .map(token => ({
+        mint: token.mint,
+        symbol: token.symbol,
+        name: token.name,
+        id: token.mint,
+        balance: 0,
+        price: 0,
+        decimal: 9
+      }));
+
+    // Structure to hold successful swap preparations
+    const successfulPreps: {
+      token: TokenInfo;
+      transaction: VersionedTransaction;
+    }[] = [];
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    try {
+      // First, prepare all swap transactions and filter out failures
+      await Promise.all(tokensToProcess.map(async (token) => {
+        return rateLimiter.schedule(async () => {
+          try {
+            // If rate check is successful, proceed with swap
+            const swapBody = {
+              from: NATIVE_MINT.toBase58(),
+              to: token.mint,
+              amount: amountPerToken,
+              slippage: slippage,
+              payer: wallet.publicKey?.toBase58(),
+              priorityFee: priorityFee,
+            };
+
+            const response = await fetch("https://swap-v2.solanatracker.io/swap", {
+              method: "POST", 
+              headers: {
+                "Content-Type": "application/json",
+                "Connection": "keep-alive"
+              },
+              body: JSON.stringify(swapBody),
+              signal: controller.signal,
+              keepalive: true
+            });
+
+            console.log(`This is the response for the ${token.symbol}:`, response);
+
+            if (!response.ok) {
+              throw new Error(`Swap API error: ${response.status}`);
+            }
+
+            const swapResponse = await response.json();
+            if (!swapResponse.txn) {
+              throw new Error("No transaction returned from API");
+            }
+
+            const tx = VersionedTransaction.deserialize(Buffer.from(swapResponse.txn, 'base64'));
+            tx.message.recentBlockhash = blockhash;
+
+            // Store successful preparation
+            successfulPreps.push({
+              token,
+              transaction: tx
+            });
+
+            console.log(`Successfully prepared swap for ${token.symbol}`);
+            return { success: true };
+          } catch (error) {
+            console.error(`Failed to prepare swap for ${token.symbol}:`, error);
+            result.failedBuys.push({
+              mint: token.mint,
+              symbol: token.symbol,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
+            return { success: false };
+          }
+        });
+      }));
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    // If we have successful preparations, process them
+    if (successfulPreps.length > 0) {
+      console.log(`Signing ${successfulPreps.length} successful transactions in one batch...`);
+      
+      // Extract just the transactions for signing
+      const transactionsToSign = successfulPreps.map(prep => prep.transaction);
+      
+      // Sign all successful transactions at once
+      const signedBundle = await wallet.signAllTransactions(transactionsToSign);
+      
+      // Send all transactions in parallel
+      const signatures = await Promise.all(
+        signedBundle.map(async (tx, index) => {
+          try {
+            const signature = await connection.sendRawTransaction(tx.serialize(), {
+              skipPreflight: true,
+              maxRetries: 3
+            });
+            return { 
+              success: true, 
+              signature,
+              token: successfulPreps[index].token 
+            };
+          } catch (error) {
+            console.error('Failed to send transaction:', error);
+            return { 
+              success: false, 
+              error,
+              token: successfulPreps[index].token 
+            };
+          }
+        })
+      );
+
+      // Process successful signatures
+      const successfulSignatures = signatures.filter((s): s is { 
+        success: true; 
+        signature: string; 
+        token: TokenInfo;
+      } => s.success);
+
+      // Add successful signatures to result
+      result.successfulSignatures.push(...successfulSignatures.map(s => s.signature));
+
+      // Confirm all transactions in parallel
+      await Promise.all(
+        successfulSignatures.map(async ({ signature, token }) => {
+          try {
+            await connection.confirmTransaction({
+              signature,
+              blockhash,
+              lastValidBlockHeight
+            });
+            
+            result.successfulBuys.push(token.mint);
+            result.totalSpent += amountPerToken;
+            console.log(`Successfully bought ${token.symbol}`);
+          } catch (error) {
+            console.error(`Failed to confirm transaction for ${token.symbol}:`, error);
+            result.failedBuys.push({
+              mint: token.mint,
+              symbol: token.symbol,
+              error: 'Failed to confirm transaction'
+            });
+          }
+        })
+      );
+
+      // Add failed sends to failedBuys
+      signatures
+        .filter((s): s is { success: false; error: any; token: TokenInfo } => !s.success)
+        .forEach(({ token, error }) => {
+          result.failedBuys.push({
+            mint: token.mint,
+            symbol: token.symbol,
+            error: error instanceof Error ? error.message : 'Failed to send transaction'
+          });
+        });
+    }
+
+    return result;
+  } catch (error) {
+    console.error('Dev wallet auto-buy failed:', error);
+    throw error;
+  }
+}
+
+// Helper function to use the dev wallet auto-buy
+export async function quickAutoBuy(
+  wallet: WalletContextState,
+  connection: Connection,
+  amount: number = 0.001
+): Promise<void> {
+  try {
+    console.log('Starting quick auto-buy...');
+    
+    const result = await devWalletAutoBuy(wallet, connection, {
+      maxTokens: 15,
+      amountPerToken: amount,
+      slippage: 5.0,
+      priorityFee: 0.0001
+    });
+
+    console.log('Auto-buy results:', {
+      successful: result.successfulBuys.length,
+      failed: result.failedBuys.length,
+      totalSpent: result.totalSpent,
+      signatures: result.successfulSignatures
+    });
+
+    // Map successful buys to token symbols for better logging
+    const successfulTokens = result.successfulBuys.map(mint => {
+      const token = tokenList.tokens.find(t => t.mint === mint);
+      return token ? token.symbol : mint;
+    });
+
+    console.log('Successfully bought:', successfulTokens.join(', '));
+    
+    if (result.failedBuys.length > 0) {
+      console.log('Failed to buy:', result.failedBuys.map(f => f.symbol).join(', '));
+    }
+  } catch (error) {
+    console.error('Quick auto-buy failed:', error);
     throw error;
   }
 }

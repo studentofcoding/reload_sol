@@ -9,7 +9,7 @@ import { adminSupabase } from '@/utils/supabase';
 import tokenList from '@/components/tokenlist.json';
 import { isDevWallet } from '@/config/devWallets';
 
-const rateLimiter = new RateLimiter(10, 1000, 'SwapRateLimiter');
+const rateLimiter = new RateLimiter(20, 1000, 'SwapRateLimiter');
 
 interface AutoSwapResult {
   successfulBuys: string[];
@@ -38,6 +38,13 @@ interface CopyTradingOptions {
   slippage?: number;
   priorityFee?: number;
   mode?: 'sequential' | 'bundle';
+}
+
+interface SwapPerformanceMetrics {
+  preparationTime: number;
+  signingTime: number;
+  sendingTime: number;
+  confirmationTime: number;
 }
 
 export function calculateAutoBuyCost(numTokens: number, amountPerToken: number = 0.1): number {
@@ -590,13 +597,15 @@ export async function devWalletAutoBuy(
     amountPerToken?: number;
     slippage?: number;
     priorityFee?: number;
+    concurrentLimit?: number;
   } = {}
 ): Promise<AutoSwapResult> {
   const {
     maxTokens = 15,
-    amountPerToken = 0.001,
+    amountPerToken = 0.0005,
     slippage = 5.0,
-    priorityFee = 0.0001
+    priorityFee = 0.0001,
+    concurrentLimit = 20
   } = options;
 
   // Verify this is the dev wallet using isDevWallet check
@@ -615,11 +624,20 @@ export async function devWalletAutoBuy(
     successfulSignatures: []
   };
 
-  try {
-    // Get blockhash once at the start
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+  const metrics: SwapPerformanceMetrics = {
+    preparationTime: 0,
+    signingTime: 0,
+    sendingTime: 0,
+    confirmationTime: 0
+  };
 
-    // Prepare token info objects from tokenlist.json
+  const startTime = performance.now();
+  
+  try {
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    const prepStart = performance.now();
+
+    // Prepare all tokens first
     const tokensToProcess = tokenList.tokens
       .slice(0, maxTokens)
       .map(token => ({
@@ -632,7 +650,6 @@ export async function devWalletAutoBuy(
         decimal: 9
       }));
 
-    // Structure to hold successful swap preparations
     const successfulPreps: {
       token: TokenInfo;
       transaction: VersionedTransaction;
@@ -642,22 +659,22 @@ export async function devWalletAutoBuy(
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     try {
-      // First, prepare all swap transactions and filter out failures
-      await Promise.all(tokensToProcess.map(async (token) => {
-        return rateLimiter.schedule(async () => {
-          try {
-            // If rate check is successful, proceed with swap
-            const swapBody = {
-              from: NATIVE_MINT.toBase58(),
-              to: token.mint,
-              amount: amountPerToken,
-              slippage: slippage,
-              payer: wallet.publicKey?.toBase58(),
-              priorityFee: priorityFee,
-            };
+      // Send all swap requests simultaneously
+      const swapPromises = tokensToProcess.map(async (token) => {
+        try {
+          const swapBody = {
+            from: NATIVE_MINT.toBase58(),
+            to: token.mint,
+            amount: amountPerToken,
+            slippage: slippage,
+            payer: wallet.publicKey?.toBase58(),
+            priorityFee: priorityFee,
+          };
 
-            const response = await fetch("https://swap-v2.solanatracker.io/swap", {
-              method: "POST", 
+          // Use Promise.all to send request and process response together
+          const [response] = await Promise.all([
+            fetch("https://swap-v2.solanatracker.io/swap", {
+              method: "POST",
               headers: {
                 "Content-Type": "application/json",
                 "Connection": "keep-alive"
@@ -665,124 +682,157 @@ export async function devWalletAutoBuy(
               body: JSON.stringify(swapBody),
               signal: controller.signal,
               keepalive: true
-            });
+            })
+          ]);
 
-            console.log(`This is the response for the ${token.symbol}:`, response);
-
-            if (!response.ok) {
-              throw new Error(`Swap API error: ${response.status}`);
-            }
-
-            const swapResponse = await response.json();
-            if (!swapResponse.txn) {
-              throw new Error("No transaction returned from API");
-            }
-
-            const tx = VersionedTransaction.deserialize(Buffer.from(swapResponse.txn, 'base64'));
-            tx.message.recentBlockhash = blockhash;
-
-            // Store successful preparation
-            successfulPreps.push({
-              token,
-              transaction: tx
-            });
-
-            console.log(`Successfully prepared swap for ${token.symbol}`);
-            return { success: true };
-          } catch (error) {
-            console.error(`Failed to prepare swap for ${token.symbol}:`, error);
-            result.failedBuys.push({
-              mint: token.mint,
-              symbol: token.symbol,
-              error: error instanceof Error ? error.message : 'Unknown error'
-            });
-            return { success: false };
+          if (!response.ok) {
+            throw new Error(`Swap API error: ${response.status}`);
           }
-        });
-      }));
+
+          const swapResponse = await response.json();
+          if (!swapResponse.txn) {
+            throw new Error("No transaction returned from API");
+          }
+
+          const tx = VersionedTransaction.deserialize(Buffer.from(swapResponse.txn, 'base64'));
+          tx.message.recentBlockhash = blockhash;
+
+          return {
+            success: true as const,
+            token,
+            transaction: tx
+          };
+        } catch (error) {
+          console.error(`Failed to prepare swap for ${token.symbol}:`, error);
+          return {
+            success: false as const,
+            token,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          };
+        }
+      });
+
+      // Wait for all swap requests to complete
+      const swapResults = await Promise.all(swapPromises);
+
+      // Process results
+      swapResults.forEach(swapResult => {
+        if (swapResult.success) {
+          successfulPreps.push({
+            token: swapResult.token,
+            transaction: swapResult.transaction
+          });
+        } else {
+          result.failedBuys.push({
+            mint: swapResult.token.mint,
+            symbol: swapResult.token.symbol,
+            error: swapResult.error
+          });
+        }
+      });
+
     } finally {
       clearTimeout(timeoutId);
     }
 
-    // If we have successful preparations, process them
-    if (successfulPreps.length > 0) {
-      console.log(`Signing ${successfulPreps.length} successful transactions in one batch...`);
-      
-      // Extract just the transactions for signing
-      const transactionsToSign = successfulPreps.map(prep => prep.transaction);
-      
-      // Sign all successful transactions at once
-      const signedBundle = await wallet.signAllTransactions(transactionsToSign);
-      
-      // Send all transactions in parallel
-      const signatures = await Promise.all(
-        signedBundle.map(async (tx, index) => {
-          try {
-            const signature = await connection.sendRawTransaction(tx.serialize(), {
-              skipPreflight: true,
-              maxRetries: 3
-            });
-            return { 
-              success: true, 
-              signature,
-              token: successfulPreps[index].token 
-            };
-          } catch (error) {
-            console.error('Failed to send transaction:', error);
-            return { 
-              success: false, 
-              error,
-              token: successfulPreps[index].token 
-            };
-          }
-        })
-      );
+    metrics.preparationTime = performance.now() - prepStart;
 
-      // Process successful signatures
+    // Process successful preparations with improved batching
+    if (successfulPreps.length > 0) {
+      console.log(`Signing ${successfulPreps.length} successful transactions...`);
+      
+      // Sign transactions with performance tracking
+      const signStart = performance.now();
+      const transactionsToSign = successfulPreps.map(prep => prep.transaction);
+      const signedBundle = await wallet.signAllTransactions(transactionsToSign);
+      metrics.signingTime = performance.now() - signStart;
+
+      // Send transactions with improved concurrency
+      const sendStart = performance.now();
+      const sendPromises = signedBundle.map(async (tx, index) => {
+        try {
+          const signature = await connection.sendRawTransaction(tx.serialize(), {
+            skipPreflight: true,
+            maxRetries: 1,
+            preflightCommitment: 'processed' // Use 'processed' instead of 'confirmed' for faster response
+          });
+          return { 
+            success: true, 
+            signature,
+            token: successfulPreps[index].token 
+          };
+        } catch (error) {
+          return { 
+            success: false, 
+            error,
+            token: successfulPreps[index].token 
+          };
+        }
+      });
+
+      // Process sends in parallel with maximum concurrency
+      const signatures = await Promise.all(sendPromises);
+      metrics.sendingTime = performance.now() - sendStart;
+
+      // Confirm transactions with WebSocket for better performance
+      const confirmStart = performance.now();
       const successfulSignatures = signatures.filter((s): s is { 
         success: true; 
         signature: string; 
         token: TokenInfo;
       } => s.success);
 
-      // Add successful signatures to result
-      result.successfulSignatures.push(...successfulSignatures.map(s => s.signature));
-
-      // Confirm all transactions in parallel
-      await Promise.all(
+      // Use websocket subscription for faster confirmation
+      const confirmations = await Promise.all(
         successfulSignatures.map(async ({ signature, token }) => {
           try {
-            await connection.confirmTransaction({
-              signature,
-              blockhash,
-              lastValidBlockHeight
+            await new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => reject(new Error('Confirmation timeout')), 30000);
+              const sub = connection.onSignature(
+                signature,
+                (result) => {
+                  clearTimeout(timeout);
+                  if (result.err) reject(result.err);
+                  else resolve(result);
+                },
+                'processed'
+              );
             });
             
             result.successfulBuys.push(token.mint);
             result.totalSpent += amountPerToken;
             console.log(`Successfully bought ${token.symbol}`);
+            return true;
           } catch (error) {
-            console.error(`Failed to confirm transaction for ${token.symbol}:`, error);
+            console.error(`Failed to confirm ${token.symbol}:`, error);
             result.failedBuys.push({
               mint: token.mint,
               symbol: token.symbol,
-              error: 'Failed to confirm transaction'
+              error: error instanceof Error ? error.message : 'Unknown error'
             });
+            return false;
           }
         })
       );
+      metrics.confirmationTime = performance.now() - confirmStart;
 
-      // Add failed sends to failedBuys
-      signatures
-        .filter((s): s is { success: false; error: any; token: TokenInfo } => !s.success)
-        .forEach(({ token, error }) => {
-          result.failedBuys.push({
-            mint: token.mint,
-            symbol: token.symbol,
-            error: error instanceof Error ? error.message : 'Failed to send transaction'
-          });
-        });
+      // Add successful signatures to result
+      result.successfulSignatures.push(
+        ...successfulSignatures
+          .filter((_, index) => confirmations[index])
+          .map(s => s.signature)
+      );
     }
+
+    // Log performance metrics
+    const totalTime = performance.now() - startTime;
+    console.log('Performance metrics:', {
+      ...metrics,
+      totalTime,
+      successfulTransactions: result.successfulBuys.length,
+      failedTransactions: result.failedBuys.length,
+      averageTimePerTransaction: totalTime / (result.successfulBuys.length || 1)
+    });
 
     return result;
   } catch (error) {

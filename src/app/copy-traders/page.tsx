@@ -1,5 +1,5 @@
 import { Metadata } from 'next';
-import CopyTradersPage from '@/components/CopyTradersPage';
+import { redirect } from 'next/navigation';
 
 export const metadata: Metadata = {
   title: 'ReloadSOL - Copy Traders',
@@ -19,6 +19,7 @@ export const metadata: Metadata = {
   },
 };
 
-export default function Page() {
-  return <CopyTradersPage />;
+export default function CopyTradersPage() {
+  redirect('/');
+  return null;
 } 

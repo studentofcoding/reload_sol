@@ -2420,22 +2420,6 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
         dustValue={reloadStats.dustValue}
         successfulTokenIds={reloadStats.successfulTokenIds}
       />
-      <div className="container max-w-4xl mx-auto">
-        <div className="flex justify-center mb-6">
-          <div className="flex space-x-2 bg-black/80 rounded-lg p-1 border border-white/20">
-            <Link href="/" className={`px-4 py-2 rounded-md ${
-              pathname === '/' ? 'bg-white/10 text-white' : 'text-white/60 hover:text-white/80'
-            }`}>
-              Reload
-            </Link>
-            <Link href="/copy-traders" className={`px-4 py-2 rounded-md ${
-              pathname === '/copy-traders' ? 'bg-white/10 text-white' : 'text-white/60 hover:text-white/80'
-            }`}>
-              Copy Traders
-            </Link>
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

@@ -756,7 +756,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
       return;
     }
 
-    setLoadingText("Preparing close transactions...");
+    setLoadingText("Preparing reload transactions...");
     setTextLoadingState(true);
 
     try {
@@ -772,10 +772,27 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
       );
       
       if (closeBundle.length > 0) {
-        setLoadingText("Signing close transactions...");
+        // Immediately remove selected tokens from the list
+        const selectedTokenIds = selectedTokens.map(token => token.id);
+        const updatedTokenList = tokenList.filter(
+          (token: TokenInfo) => !selectedTokenIds.includes(token.id)
+        );
+        setTokenList(updatedTokenList);
+        
+        // Update token counts immediately
+        const { zero, nonZero } = tokenCounts;
+        setTokenCounts({
+          zero: swapState ? zero : zero - selectedTokens.length,
+          nonZero: swapState ? nonZero - selectedTokens.length : nonZero
+        });
+
+        // Clear selection immediately
+        setSelectedTokenList([]);
+
+        setLoadingText("Signing reload transactions...");
         const signedBundle = await wallet.signAllTransactions(closeBundle);
         
-        setLoadingText("Processing closes...");
+        setLoadingText("Processing reloads...");
         const closeResults = await sendTransactions(
           signedBundle, 
           selectedTokens,
@@ -794,25 +811,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           );
           const solAmount = closeResults.successfulTokens.length * 0.001;
           
-          // SIMPLIFIED: Directly update the token list by removing successful tokens
-          if (tokenList && tokenList.length > 0) {
-            const updatedTokenList = tokenList.filter(
-              (token: TokenInfo) => !closeResults.successfulTokens.includes(token.id)
-            );
-            setTokenList(updatedTokenList);
-            
-            // Update token counts
-            const { zero, nonZero } = tokenCounts;
-            setTokenCounts({
-              zero: swapState ? zero : zero - closeResults.successfulTokens.length,
-              nonZero: swapState ? nonZero - closeResults.successfulTokens.length : nonZero
-            });
-          }
-          
-          // Clear selection
-          setSelectedTokenList([]);
-          
-          // Set reload stats and show popup WITHOUT refreshing token list
+          // Set reload stats and show popup
           setReloadStats({
             tokenCount: closeResults.successfulTokens.length,
             solAmount: solAmount,
@@ -822,15 +821,32 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           });
           
           setShowReloadPopup(true);
-          successAlert(`You've been Reload your SOL`);
+          successAlert(`Successfully Reload your SOL!`);
         }
+
+        // If any tokens failed, add them back to the list
         if (closeResults.failedTokens.length > 0) {
-          warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
+          const failedTokens = tokenList.filter(
+            (token: TokenInfo) => closeResults.failedTokens.includes(token.id)
+          );
+          setTokenList([...updatedTokenList, ...failedTokens]);
+          
+          // Update token counts to account for failed tokens
+          setTokenCounts({
+            zero: swapState ? zero : zero - (selectedTokens.length - closeResults.failedTokens.length),
+            nonZero: swapState ? nonZero - (selectedTokens.length - closeResults.failedTokens.length) : nonZero
+          });
+
+          warningAlert(`Failed to reload ${closeResults.failedTokens.length} accounts`);
         }
       }
     } catch (error: any) {
-      console.error("Error during close:", error);
-      warningAlert(error?.message || "Failed to close accounts");
+      console.error("Error during reload:", error);
+      warningAlert(error?.message || "Failed to reload accounts");
+      
+      // On error, restore the original token list
+      setTokenList([...tokenList]);
+      setSelectedTokenList([]);
     } finally {
       setLoadingText("");
       setTextLoadingState(false);
@@ -1068,7 +1084,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               successAlert(`Successfully Reload your SOL!`);
             }
             if (closeResults.failedTokens.length > 0) {
-              warningAlert(`Failed to close ${closeResults.failedTokens.length} accounts`);
+              warningAlert(`Failed to reload ${closeResults.failedTokens.length} accounts`);
             }
           }
         }
@@ -1296,26 +1312,75 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
   };
 
   // Add confirmation dialog component
-  const ConfirmDialog = ({ onConfirm, onCancel }: { onConfirm: () => void, onCancel: () => void }) => (
+  const ConfirmDialog = ({ 
+    onConfirm, 
+    onCancel, 
+    mode = 'transfer' // Can be 'transfer', 'swap', or 'close'
+  }: { 
+    onConfirm: () => void, 
+    onCancel: () => void,
+    mode?: 'transfer' | 'swap' | 'close'
+  }) => (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-black border-[1px] border-white/30 rounded-lg p-6 max-w-md w-full mx-4">
-        <h3 className="text-white text-lg font-semibold mb-4">Confirm Transfer</h3>
+        <h3 className="text-white text-lg font-semibold mb-4">
+          {mode === 'transfer' ? 'Confirm Transfer' : 
+           mode === 'swap' ? 'Confirm Swap & Reload' : 
+           'Confirm Reload'}
+        </h3>
         
-        <div className="mb-4">
-          <label className="block text-white text-sm font-bold mb-2">
-            Transfer to wallet:
-          </label>
-          <input
-            type="text"
-            value={transferWallet || ''}
-            onChange={(e) => setTransferWallet(e.target.value)}
-            className="w-full px-3 py-2 bg-black/50 text-white border border-white/30 rounded focus:outline-none focus:border-white/50"
-            placeholder="Enter destination wallet address"
-          />
-        </div>
+        {mode === 'transfer' && (
+          <div className="mb-4">
+            <label className="block text-white text-sm font-bold mb-2">
+              Transfer to wallet:
+            </label>
+            <input
+              type="text"
+              value={transferWallet || ''}
+              onChange={(e) => setTransferWallet(e.target.value)}
+              className="w-full px-3 py-2 bg-black/50 text-white border border-white/30 rounded focus:outline-none focus:border-white/50"
+              placeholder="Enter destination wallet address"
+            />
+          </div>
+        )}
 
-        <div className="text-white mb-4">
-          Are you sure you want to transfer {selectedTokenList.length} tokens?
+        <div className="text-white mb-4 space-y-2">
+          {mode === 'transfer' && (
+            <p>
+              Are you sure you want to transfer {selectedTokenList.length} tokens?
+            </p>
+          )}
+          
+          {mode === 'swap' ? (
+            <div className="text-sm text-gray-400 bg-white/5 p-3 rounded-md">
+              <p className="mb-2 text-white font-medium text-sm">✓ This action requires 2 wallet confirmations:</p>
+              <ol className="list-decimal list-inside space-y-1">
+                <li>First confirmation to swap tokens</li>
+                <li>Second confirmation to reload tokens</li>
+              </ol>
+              <p className="mt-2 text-xs">
+                Note:
+                <br />
+                All the SOL will be reloaded to your wallet after all steps are completed, with small fee applied.
+              </p>
+            </div>
+          ) : mode === 'close' ? (
+            <div className="text-sm text-gray-400 bg-white/5 p-3 rounded-md">
+              <p>⚠️ This action requires 1 wallet confirmation</p>
+              <p className="mt-2 text-xs">
+                Note:
+                <br />
+                All the SOL will be transferred to your wallet after all are completed, with small fee applied.
+              </p>
+            </div>
+          ) : (
+            <div className="text-sm text-gray-400 bg-white/5 p-3 rounded-md">
+              <p>⚠️ This action requires 1 wallet confirmation</p>
+              <p className="mt-2 text-xs">
+                Note: Standard transfer fee applies.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="flex justify-end gap-4">
@@ -1329,7 +1394,9 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             onClick={onConfirm}
             className="px-4 py-2 bg-white text-black rounded hover:bg-gray-200 transition-colors"
           >
-            Confirm
+            {mode === 'transfer' ? 'Transfer' : 
+             mode === 'swap' ? 'Oke, Reload my SOL' : 
+             'Oke, Reload my SOL'}
           </button>
         </div>
       </div>
@@ -2154,10 +2221,14 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             </div>
           </div>
           <div className="flex flex-row gap-4 items-center justify-end w-full px-5">
-            {showConfirmDialog && (
+            {showConfirmDialog && swapState && (
               <ConfirmDialog
-                onConfirm={validateAndTransfer}
+                onConfirm={() => {
+                  changeToken();
+                  setShowConfirmDialog(false);
+                }}
                 onCancel={() => setShowConfirmDialog(false)}
+                mode="swap"
               />
             )}
             {!swapState && (
@@ -2217,12 +2288,12 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                 )}
                 <div 
                   onClick={() => {
-                    if (!textLoadingState && publicKey?.toBase58()) {
-                      changeToken();
+                    if (!textLoadingState && publicKey?.toBase58() && selectedTokenList.length > 0) {
+                      changeToken(); // Direct call for close operation, no dialog needed
                     }
                   }}
                   className={`${
-                    publicKey?.toBase58() !== undefined && !textLoadingState
+                    publicKey?.toBase58() !== undefined && selectedTokenList.length > 0 && !textLoadingState
                       ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
                       : "border-gray-800 cursor-not-allowed text-gray-800"
                   } text-base rounded-full border-[1px] font-semibold px-5 py-2 flex items-center gap-2`}
@@ -2265,28 +2336,28 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                   </div>
                 )}
         
-              <div 
-                onClick={() => {
-                  if (!textLoadingState && publicKey?.toBase58()) {
-                    changeToken();
-                  }
-                }}
-                className={`${
-                  publicKey?.toBase58() !== undefined && !textLoadingState
-                    ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
-                    : "border-gray-800 cursor-not-allowed text-gray-800"
-                } text-base rounded-full border-[1px] font-semibold px-5 py-2 flex items-center gap-2`}
-              >
-                {textLoadingState ? (
-                  <div className="flex items-center gap-2">
-                    <IoMdRefresh className="w-4 h-4 animate-spin" />
-                    <span>Processing...</span>
-                  </div>
-                ) : (
-                  "Autoswap & Reload my SOL"
-                )}
+                <div 
+                  onClick={() => {
+                    if (!textLoadingState && publicKey?.toBase58() && selectedTokenList.length > 0) {
+                      setShowConfirmDialog(true); // Show dialog for swap
+                    }
+                  }}
+                  className={`${
+                    publicKey?.toBase58() !== undefined && selectedTokenList.length > 0 && !textLoadingState
+                      ? "border-white cursor-pointer text-white hover:bg-white hover:text-black" 
+                      : "border-gray-800 cursor-not-allowed text-gray-800"
+                  } text-base rounded-full border-[1px] font-semibold px-5 py-2 flex items-center gap-2`}
+                >
+                  {textLoadingState ? (
+                    <div className="flex items-center gap-2">
+                      <IoMdRefresh className="w-4 h-4 animate-spin" />
+                      <span>Processing...</span>
+                    </div>
+                  ) : (
+                    "Autoswap & Reload my SOL"
+                  )}
+                </div>
               </div>
-            </div>
             )}
           </div>
           {showAtaDialog && (

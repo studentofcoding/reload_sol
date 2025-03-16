@@ -12,7 +12,7 @@ const ChangeLog: FC<ChangeLogProps> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 w-[95%] max-w-[600px] mx-auto">
+    <div className="sticky top-5 md:left-1/2 md:-translate-x-1/2 z-50 w-[95%] sm:w-[90%] max-w-[600px] mx-auto">
       <div className="shadow-lg p-4">
         <div className="flex justify-evenly items-center mb-2">
           <h5 className="text-white/80 font-light text-sm sm:text-base text-center sm:text-left">

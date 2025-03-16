@@ -1955,8 +1955,8 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
   };
 
   return (
-    <div className="pt-10 relative z-30">
-      <ChangeLog isOpen={showChangeLog} onClose={handleCloseChangeLog} />
+    <div className="pt-2 relative z-30">
+      {/* <ChangeLog isOpen={showChangeLog} onClose={handleCloseChangeLog} /> */}
       <div className="container mx-auto px-4 py-6">
         <div className="flex flex-col items-center justify-between w-full h-full rounded-xl border-[1px] border-white max-w-4xl mx-auto py-6 gap-4 relative">
           <div className="w-full flex justify-between flex-col sm2:flex-row items-center h-full px-6 border-b-[1px] border-b-white pb-4">

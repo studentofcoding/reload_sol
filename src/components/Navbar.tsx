@@ -2103,7 +2103,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                         border border-white/30 hover:border-white/50
                         transition-all duration-300 group text-xss sm:text-sm">
                       <span className="font-semibold text-white/80 min-w-[120px] sm:min-w-[180px] inline-block text-[10px] sm:text-sm text-center">
-                        {userCurrency === 'USD' ? 'Sell all your memecoins and get up to' : 'Jual semua memecoinsmu dan dapatkan kembali sampai'} <AnimatedSolValue userCurrency={userCurrency} />{userCurrency === 'USD' ? '(0.5 SOL)' : '(0.5 SOL)'}
+                        {userCurrency === 'USD' ? 'Sell all your worthless memecoins and get up to' : 'Jual semua koin tidak bernilaimu dan dapatkan kembali sampai'} <AnimatedSolValue userCurrency={userCurrency} />{userCurrency === 'USD' ? '(0.5 SOL)' : '(0.5 SOL)'}
                       </span>
                     </div>
                     <div className="flex gap-4">

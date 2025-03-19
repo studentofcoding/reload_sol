@@ -7,6 +7,7 @@ import Header from '@/components/Header'
 import { Toaster } from 'react-hot-toast'
 import Script from 'next/script'
 import { ReferralProvider } from '@/contexts/referralContext'
+import { Analytics } from "@vercel/analytics/react"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -35,6 +36,7 @@ export default function RootLayout({
             <Navbar />
             {children}
             <Script src="https://scripts.simpleanalyticscdn.com/latest.js" />
+            <Analytics />
           </div>
         </ClientProviders>
         <Toaster position="top-center" />

@@ -40,6 +40,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import RecentTransactionSlider from './RecentTransactionSlider';
 import AnimatedSolValue from './AnimatedSolValue';
+import ConnectButton from "./ConnectButton";
 
 const SLIPPAGE = 20;
 
@@ -2105,9 +2106,9 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                         {userCurrency === 'USD' ? 'get up to ' : 'dapatkan sampai '}<AnimatedSolValue userCurrency={userCurrency} />{userCurrency === 'USD' ? 'from all your tokens' : 'dari tokenmu'}
                       </span>
                     </div>
-                    {/* <div className="flex gap-4">
+                    <div className="flex gap-4">
                       <ConnectButton />
-                    </div> */}
+                    </div>
                   </div>
                 ) : textLoadingState ? (
                   <table className="w-full text-sm text-left rtl:text-right text-white dark:text-white">

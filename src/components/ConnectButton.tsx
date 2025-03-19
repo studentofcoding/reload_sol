@@ -12,7 +12,7 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // 1 second delay between retries
 
 const ConnectButton: FC = () => {
-  const { setTokenList, setLoadingState, swapState, setSwapState, setTokenCounts } = useContext<any>(UserContext);
+  const { setTokenList, setLoadingState, swapState, setSwapState, setTokenCounts, userCurrency } = useContext<any>(UserContext);
   const { setVisible } = useWalletModal();
   const { publicKey, disconnect } = useWallet();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -154,7 +154,7 @@ const ConnectButton: FC = () => {
           className="flex items-center justify-center text-[10px] lg:text-[14px] w-full"
           onClick={() => setVisible(true)}
         >
-          Check My Wallet
+          {userCurrency === 'USD' ? 'Check my wallet' : 'Cek wallet saya'}
           <div className="rotate-90 w-3 h-3 ml-2">
             <ArrowLine />
           </div>

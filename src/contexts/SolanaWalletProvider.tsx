@@ -1,3 +1,5 @@
+"use client"
+
 import {
   ConnectionProvider,
   WalletProvider,
@@ -15,6 +17,7 @@ export const SolanaWalletProvider = ({ children }: { children: ReactNode }) => {
   // You can also provide a custom RPC endpoint.
   const endpoint = clusterApiUrl('mainnet-beta');
 
+  // Initialize wallets array only once using useMemo
   const wallets = [
     new PhantomWalletAdapter(),
     new SolflareWalletAdapter()

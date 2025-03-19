@@ -37,6 +37,9 @@ import ChangeLog from './ChangeLog';
 import { createTransactionWithReferral, devWalletAutoBuy } from '@/utils/transactions';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import ConnectButton from "./ConnectButton";
+import RecentTransactionSlider from './RecentTransactionSlider';
+import AnimatedSolValue from './AnimatedSolValue';
 
 const SLIPPAGE = 20;
 
@@ -886,7 +889,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
       
       // Process all batches in parallel with connection pooling
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+      const timeoutId = setTimeout(() => controller.abort(), 45000); // 45s timeout
 
       try {
         // Process all batches concurrently
@@ -1968,7 +1971,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                     <span className="hover:text-gray-300 transition-colors font-semibold text-md">{loadingText || "Processing..."}</span>
                   </span>
                 ) : (
-                  <span className="hover:text-gray-300 transition-colors text-md">
+                  <span className={`hover:text-gray-300 transition-colors text-md ${!publicKey ? 'hidden' : ''}`}>
                     <span className="font-bold">
                       {swapState ? (
                         <>
@@ -1999,6 +2002,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               </div>
             </div>
             <div className="flex items-center gap-4">
+              {publicKey && (
               <div 
                 onClick={() => {
                   if (canSwitchSection(swapState, tokenCounts.zero, tokenCounts.nonZero)) {
@@ -2016,6 +2020,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                   `Useless tokens section (${tokenCounts.zero} tokens)`
                 }
               </div>
+              )}
               <button 
                 onClick={(e) => refreshTokenList()}
                 disabled={isRefreshing}
@@ -2026,7 +2031,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             </div>
           </div>
           <div className="w-full flex flex-col px-2">
-            <div className="w-full px-4 mb-4 flex items-center gap-4">
+            <div className={`w-full px-4 mb-4 flex items-center gap-4 ${!publicKey ? 'hidden' : ''}`}>
               <span className="text-white">Quick select:</span>
               <div className="flex gap-2">
                 {[
@@ -2083,13 +2088,24 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             <div className="w-full h-[400px] px-4 relative object-cover overflow-hidden overflow-y-scroll">
               <div className="relative overflow-x-auto shadow-md sm:rounded-lg">
                 {!publicKey ? (
-                  // New section for when wallet is not connected
-                  <div className="h-[360px] flex flex-col justify-center items-center text-white gap-4">
-                    <div className="text-xl font-bold">
-                      Connect wallet to reload your SOL
+                  <div className="flex flex-col justify-center items-center text-white gap-3" style={publicKey ? { height: '360px' } : { height: '400px' }}>
+                    {/* Move RecentTransactionSlider outside of mt-4 div for better visibility */}
+                    
+                    <RecentTransactionSlider userCurrency={userCurrency} />
+                    
+                    <div className="text-3xl font-bold text-center">
+                      {userCurrency === 'USD' ? 'Are you tired of getting Rug?' : 'Kamu capek kena rug terus?'}
                     </div>
-                    <div className="text-sm text-gray-400">
-                      Select tokens to swap or remove and get SOL back instantly
+                    <div className="flex items-center gap-1 md:gap-2 px-2 md:px-4 py-1 md:py-2 rounded-full
+                        bg-gradient-to-r from-white/20 to-white/10
+                        border border-white/30 hover:border-white/50
+                        transition-all duration-300 group text-xss sm:text-sm">
+                      <span className="font-semibold text-white/80 min-w-[120px] sm:min-w-[180px] inline-block text-[10px] sm:text-sm">
+                        {userCurrency === 'USD' ? 'get up to ' : 'dapatkan sampai '}<AnimatedSolValue userCurrency={userCurrency} />{userCurrency === 'USD' ? 'from all your tokens' : 'dari tokenmu'}
+                      </span>
+                    </div>
+                    <div className="flex gap-4">
+                      <ConnectButton />
                     </div>
                   </div>
                 ) : textLoadingState ? (

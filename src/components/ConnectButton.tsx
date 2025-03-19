@@ -105,7 +105,7 @@ const ConnectButton: FC = () => {
     <div className="rounded-lg border-[0.75px] border-white/30 bg-black/80 shadow-btn-inner text-white tracking-[0.32px] py-2 px-2 w-[140px] lg:w-[180px] group relative cursor-pointer">
       {publicKey ? (
         <>
-          <div className="flex items-center justify-center text-[12px] lg:text-[16px] gap-2">
+          <div className="flex items-center justify-center text-[10px] lg:text-[14px] gap-2">
             {isLoading ? (
               <div className="flex items-center gap-2">
                 <LoadingSpinner size="sm" />
@@ -151,10 +151,10 @@ const ConnectButton: FC = () => {
         </>
       ) : (
         <button
-          className="flex items-center justify-center text-[12px] lg:text-[16px] w-full"
+          className="flex items-center justify-center text-[10px] lg:text-[14px] w-full"
           onClick={() => setVisible(true)}
         >
-          Connect Wallet
+          Check My Wallet
           <div className="rotate-90 w-3 h-3 ml-2">
             <ArrowLine />
           </div>

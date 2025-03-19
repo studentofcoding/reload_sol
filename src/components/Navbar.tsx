@@ -2096,14 +2096,14 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                     <RecentTransactionSlider userCurrency={userCurrency} />
                     
                     <div className="text-3xl font-bold text-center">
-                      {userCurrency === 'USD' ? 'Are you tired of getting Rug?' : 'Kamu capek kena rug terus?'}
+                      {userCurrency === 'USD' ? 'Always getting Rug on Solana?' : 'Kena RUG terus di Solana?'}
                     </div>
                     <div className="flex items-center gap-1 md:gap-2 px-2 md:px-4 py-1 md:py-2 rounded-full
                         bg-gradient-to-r from-white/20 to-white/10
                         border border-white/30 hover:border-white/50
                         transition-all duration-300 group text-xss sm:text-sm">
-                      <span className="font-semibold text-white/80 min-w-[120px] sm:min-w-[180px] inline-block text-[10px] sm:text-sm">
-                        {userCurrency === 'USD' ? 'get up to ' : 'dapatkan sampai '}<AnimatedSolValue userCurrency={userCurrency} />{userCurrency === 'USD' ? 'from all your tokens' : 'dari tokenmu'}
+                      <span className="font-semibold text-white/80 min-w-[120px] sm:min-w-[180px] inline-block text-[10px] sm:text-sm text-center">
+                        {userCurrency === 'USD' ? 'Sell all your memecoins and get up to' : 'Jual semua memecoinsmu dan dapatkan kembali sampai'} <AnimatedSolValue userCurrency={userCurrency} />{userCurrency === 'USD' ? '(0.5 SOL)' : '(0.5 SOL)'}
                       </span>
                     </div>
                     <div className="flex gap-4">

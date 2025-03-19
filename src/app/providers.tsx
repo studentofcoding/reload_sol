@@ -1,9 +1,15 @@
 "use client";
 import React, { ReactNode } from "react";
 import UserContext from "@/contexts/usercontext";
-import { SolanaWalletProvider } from "@/contexts/SolanaWalletProvider";
 import { QueryClientProvider, QueryClient } from "react-query";
 import { ReferralProvider } from '@/contexts/referralContext';
+import dynamic from 'next/dynamic';
+
+// Dynamically import SolanaWalletProvider with SSR disabled
+const SolanaWalletProvider = dynamic(
+  () => import('@/contexts/SolanaWalletProvider').then(mod => mod.SolanaWalletProvider),
+  { ssr: false }
+);
 
 const queryClient = new QueryClient();
 

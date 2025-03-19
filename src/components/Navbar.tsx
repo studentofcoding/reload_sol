@@ -1,4 +1,5 @@
 "use client"
+
 import React, { useContext, useEffect, useState } from "react";
 import { useWallet, WalletContextState } from "@solana/wallet-adapter-react";
 import UserContext from "@/contexts/usercontext";
@@ -211,7 +212,8 @@ export default function Home() {
     loadingState
   } = useContext<any>(UserContext);
   const wallet = useWallet();
-  const { publicKey } = wallet;
+  const { publicKey } = wallet || {};
+  
   const [allSelectedFlag, setAllSelectedFlag] = useState<boolean>(false);
   const [solConnection, setSolConnection] = useState<Connection | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);

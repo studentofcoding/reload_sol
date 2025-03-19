@@ -15,7 +15,8 @@ import { AlphaWalletAdapter } from '@solana/wallet-adapter-wallets';
 
 require("@solana/wallet-adapter-react-ui/styles.css");
 
-export const SolanaWalletProvider = ({ children }: { children: ReactNode }) => {
+// Make this the default export
+export default function SolanaWalletProvider({ children }: { children: ReactNode }) {
   // const network = WalletAdapterNetwork.Mainnet;
 
   // You can also provide a custom RPC endpoint.
@@ -27,6 +28,7 @@ export const SolanaWalletProvider = ({ children }: { children: ReactNode }) => {
       // Remove Phantom and Solflare adapters as they're now Standard Wallets
       // Only include non-standard wallets if needed
       new AlphaWalletAdapter(),
+      // Add other non-standard wallets if needed
     ],
     []
   );
@@ -38,4 +40,7 @@ export const SolanaWalletProvider = ({ children }: { children: ReactNode }) => {
       </WalletProvider>
     </ConnectionProvider>
   );
-};
+}
+
+// Also keep the named export for backward compatibility
+export { SolanaWalletProvider };

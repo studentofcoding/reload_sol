@@ -24,20 +24,37 @@ export async function generateMetadata({
   const referralCode = getReferralCode(params, searchParams);
   
   const baseMetadata = {
-    title: 'ReloadSOL - reload all your empty and dust tokens to SOL',
-    description: 'Reload SOL helps you convert dust tokens back to SOL instantly',
+    title: 'ReloadSOL - 3 click tools to reload your Solana',
+    description: 'Easily reload your Solana tokens in just 3 clicks. Convert dust tokens and useless tokens back to SOL.',
     openGraph: {
-      title: 'ReloadSOL - reload all your empty and dust tokens to SOL',
-      description: 'Reload SOL helps you convert dust tokens back to SOL instantly',
+      title: 'ReloadSOL - 3 click tools to reload your Solana',
+      description: 'Easily reload your Solana tokens in just 3 clicks. Convert dust tokens and useless tokens back to SOL.',
       url: 'https://reloadsol.xyz',
       siteName: 'ReloadSOL',
       locale: 'en-US',
       type: 'website',
+      images: [
+        {
+          url: '/og-image.jpg',
+          width: 1200,
+          height: 630,
+          alt: 'ReloadSOL - 3 click tools to reload your Solana',
+        },
+      ],
     },
     twitter: {
       card: 'summary_large_image',
-      title: 'ReloadSOL - reload all your empty and dust tokens to SOL',
-      description: 'Reload SOL helps you convert dust tokens back to SOL instantly'
+      title: 'ReloadSOL - 3 click tools to reload your Solana',
+      description: 'Easily reload your Solana tokens in just 3 clicks. Convert dust tokens and useless tokens back to SOL.',
+      images: ['/og-image.jpg'],
+    },
+    // Add additional SEO-friendly metadata
+    keywords: 'Solana, SOL, dust tokens, token converter, crypto tools, blockchain, DeFi',
+    authors: [{ name: 'ReloadSOL Team' }],
+    metadataBase: new URL('https://reloadsol.xyz'),
+    robots: {
+      index: true,
+      follow: true,
     },
   };
 
@@ -46,20 +63,19 @@ export async function generateMetadata({
     const referralUrl = `https://reloadsol.xyz/@${referralCode}`;
     return {
       ...baseMetadata,
-      title: `ReloadSOL - reload back your sol with ${referralCode}`,
-      description: `Join ReloadSOL through ${referralCode}'s referral and get SOL from your dust tokens`,
+      title: `ReloadSOL - Reload your Solana with ${referralCode}`,
+      description: `Join ReloadSOL through ${referralCode}'s referral and convert your dust tokens to SOL in just 3 clicks`,
       openGraph: {
         ...baseMetadata.openGraph,
-        title: `ReloadSOL - reload back your sol with ${referralCode}`,
-        description: `Join ReloadSOL through ${referralCode}'s referral and get SOL from your dust tokens`,
-        url: referralUrl, // Use the canonical @username format
+        title: `ReloadSOL - Reload your Solana with ${referralCode}`,
+        description: `Join ReloadSOL through ${referralCode}'s referral and convert your dust tokens to SOL in just 3 clicks`,
+        url: referralUrl,
       },
       twitter: {
         ...baseMetadata.twitter,
-        title: `ReloadSOL - reload back your sol with ${referralCode}`,
-        description: `Join ReloadSOL through ${referralCode}'s referral and get SOL from your dust tokens`,
+        title: `ReloadSOL - Reload your Solana with ${referralCode}`,
+        description: `Join ReloadSOL through ${referralCode}'s referral and convert your dust tokens to SOL in just 3 clicks`,
       },
-      // Add canonical URL to ensure consistent referral links
       alternates: {
         canonical: referralUrl,
       },

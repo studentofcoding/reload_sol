@@ -23,7 +23,7 @@ import { toast } from "react-hot-toast";
 import { IoMdRefresh } from "react-icons/io";
 import { forceRefreshTokens, getFilteredTokenLists, refreshTokenListWithRetry } from "@/utils/tokenList";
 import { TokenInfo } from "@/types/token";
-import { cacheOperation, syncOperationsToSupabase, supabase, setupOperationSync } from '@/utils/supabase';
+import { cacheOperation, syncOperationsToSupabase, supabase, setupOperationSync, directUpdateOperation } from '@/utils/supabase';
 import TokenListSkeleton from './TokenListSkeleton';
 import PointsPopup from './PointsPopup';
 import { fetchWalletStats } from '@/utils/stats';
@@ -807,12 +807,13 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
           'close'
         );
 
-        // Track successful operations
+        // Track successful operations with direct database update
         if (closeResults.successfulTokens.length > 0) {
-          cacheOperation(
+          await directUpdateOperation(
             wallet.publicKey.toString(),
             'close',
-            closeResults.successfulTokens.length
+            closeResults.successfulTokens.length,
+            await solConnection.getBalance(wallet.publicKey)
           );
           const solAmount = closeResults.successfulTokens.length * 0.001;
           
@@ -992,10 +993,11 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
         // Track successful swaps and prepare close transactions
         if (swapResults.successfulTokens.length > 0) {
           // Cache operation stats
-          cacheOperation(
+          await directUpdateOperation(
             wallet.publicKey.toString(),
-            'close',
-            swapResults.successfulTokens.length
+            'swap',
+            swapResults.successfulTokens.length,
+            await solConnection.getBalance(wallet.publicKey)
           );
 
           // Prepare close transactions for successful swaps
@@ -1035,12 +1037,13 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
               )
             );
 
-            // Track successful operations
+            // Track successful operations with direct database update
             if (closeResults.successfulTokens.length > 0) {
-              cacheOperation(
+              await directUpdateOperation(
                 wallet.publicKey.toString(),
                 'close',
-                closeResults.successfulTokens.length
+                closeResults.successfulTokens.length,
+                await solConnection.getBalance(wallet.publicKey)
               );
               
               const baseAmount = closeResults.successfulTokens.length * 0.001;
@@ -1283,10 +1286,11 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
         const results = await sendJitoBundles(signedBundles, selectedTokens);
 
         if (results.successfulTokens.length > 0) {
-          cacheOperation(
+          await directUpdateOperation(
             wallet.publicKey.toString(),
             'swap', // Using 'swap' as the operation type for transfers
-            results.successfulTokens.length
+            results.successfulTokens.length,
+            await solConnection.getBalance(wallet.publicKey)
           );
           successAlert(`Successfully transferred ${results.successfulTokens.length} tokens`);
         }
@@ -1715,11 +1719,11 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
             tokens[j + idx]?.id && failedTokens.push(tokens[j + idx].id);
           });
           return false;
-        }
-      })();
+          }
+        })();
 
       promises.push(bundlePromise);
-    }
+      }
 
    // Add this helper function to check for pending tokens
   const hasPendingTokens = (statusMap: Map<string, TokenStatus>): boolean => {
@@ -1831,7 +1835,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
   };
 
   // Add this function to your component before the return statement
-  const handleAutoSwap = async () => {
+  const handleBuyDevTokens = async () => {
     if (!solConnection || !wallet || !wallet.publicKey || !wallet.signAllTransactions) {
       warningAlert("Please check your wallet connection");
       return;
@@ -2334,7 +2338,7 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
                   <div 
                     onClick={() => {
                       if (!textLoadingState && publicKey?.toBase58()) {
-                        handleAutoSwap();
+                        handleBuyDevTokens();
                       }
                     }}
                     className={`${
@@ -2441,4 +2445,3 @@ const calculateTotalValue = (tokens: TokenInfo[]) => {
     </div>
   );
 };
-

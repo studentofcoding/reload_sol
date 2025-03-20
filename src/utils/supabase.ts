@@ -133,6 +133,53 @@ export const syncOperationsToSupabase = async () => {
   }
 };
 
+// Direct update function for immediate database updates
+export const directUpdateOperation = async (
+  walletAddress: string, 
+  type: 'close' | 'swap',
+  count: number,
+  solBalance?: number,
+) => {
+  try {
+    // First get existing counts
+    const { data: existing } = await supabase
+      .from('token_operations')
+      .select('swap_count, close_count')
+      .eq('wallet_address', walletAddress)
+      .single();
+
+    const timestamp = new Date().toISOString();
+    const updates = {
+      wallet_address: walletAddress,
+      close_count: type === 'close' ? (existing?.close_count || 0) + count : (existing?.close_count || 0),
+      swap_count: type === 'swap' ? (existing?.swap_count || 0) + count : (existing?.swap_count || 0),
+      last_operation_time: timestamp,
+      ...(solBalance !== undefined && { sol_balance: solBalance, last_balance_update: timestamp }),
+    };
+
+    const { error } = await supabase
+      .from('token_operations')
+      .upsert(updates, {
+        onConflict: 'wallet_address'
+      });
+
+    if (error) throw error;
+
+    // console.log(`Updated ${type} operation directly in database. Batch results:
+    //   - Operation: ${type}
+    //   - Successful: ${count}/${options?.totalTokens || count}
+    //   - Total ${type} count: ${type === 'close' ? updates.close_count : updates.swap_count}
+    // `);
+    
+    // Also update local cache for backup sync
+    cacheOperation(walletAddress, type, count);
+  } catch (error) {
+    console.error('Failed to update database directly:', error);
+    // Fallback to cache-only if direct update fails
+    cacheOperation(walletAddress, type, count);
+  }
+};
+
 // Set up interval to sync operations to Supabase
 export const setupOperationSync = (): NodeJS.Timeout => {
   // Initial sync on setup
